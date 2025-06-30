@@ -1,0 +1,84 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Error Context and Logging
+
+This rule enforces logging best practices to ensure that when errors occur, they provide enough context to be debugged quickly.
+
+## **Problem Pattern: Insufficient Error Context**
+- **Symptoms**: Receiving generic error messages like "Failed to create document" with no details about what data caused the failure.
+- **Root Cause**: Catching errors but not logging the specific context (e.g., input data, IDs) that led to the error.
+- **Time to Debug**: Can be extremely high, as it requires manually reproducing the conditions that caused the error.
+
+### **API Error Debugging Workflow: 5-Minute Protocol**
+
+**Minute 1-2: Log Analysis**
+- **Look for structured logs**. The goal is to see the data at each major step of the process.
+
+```typescript
+// ✅ DO: Add structured, contextual logging at service and API boundaries.
+console.log('[DEBUG] API Request Data:', JSON.stringify(requestData, null, 2));
+console.log('[DEBUG] Data Sent to Service:', JSON.stringify(serviceData, null, 2));
+console.log('[DEBUG] Data for MongoDB:', JSON.stringify(mongoData, null, 2));
+```
+
+**Minute 3-4: Schema Verification**
+- Open the relevant MongoDB model file (e.g., `src/lib/db/models/interaction.ts`).
+- Compare field names exactly (camelCase vs. snake_case).
+- Check for all `required: true` fields in the schema and ensure they are present in your logs.
+
+**Minute 5: Data Flow Trace**
+- Trace the data through the logged steps: API Request -> Service Transformation -> MongoDB Document.
+- Pinpoint where the data structure or field names change incorrectly.
+
+### **Consistent Error Handling and Response Patterns**
+
+When you catch an error, enrich it with context before re-throwing or sending a response.
+
+```typescript
+// ✅ DO: Provide actionable, context-rich error messages.
+try {
+  const interaction = await contentService.createInteraction(interactionData, options);
+} catch (error) {
+  // Log the detailed context for backend debugging.
+  console.error('[ERROR] Interaction creation failed:', {
+    errorMessage: error.message,
+    providedFields: Object.keys(interactionData),
+    missingFields: findMissingRequiredFields(interactionData), // Helper function
+    organizationId: interactionData.organizationId,
+    sourceType: interactionData.sourceType
+  });
+  // Throw an error with a user-friendly message.
+  throw new Error(`Failed to create interaction: ${error.message}`);
+}
+
+function findMissingRequiredFields(data: any): string[] {
+  const required = ['organizationId', 'sourceType', 'sourceId', 'title', 'content'];
+  return required.filter(field => !data.hasOwnProperty(field));
+}
+```
+
+### **Debugging Time Savers**
+
+Use quick, targeted commands to validate schemas without leaving your terminal.
+
+```bash
+# Check for required fields in a MongoDB model schema quickly.
+grep "required.*true" src/lib/db/models/interaction.ts
+
+# Check for specific field types.
+grep "type.*String" src/lib/db/models/interaction.ts
+```
+
+### **Circuit Breaker Issues in Development**
+
+**Problem**: The circuit breaker, while useful in production, can cause intermittent, hard-to-debug failures in local development environments.
+
+**Solution**: Disable it during development.
+
+```javascript
+// ✅ DO: Use the provided script to disable circuit breakers in development for a consistent experience.
+node disable-circuit-breaker-dev.js
+```

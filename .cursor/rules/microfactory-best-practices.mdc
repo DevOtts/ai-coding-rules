@@ -1,0 +1,516 @@
+---
+description: Enforces best practices for Next.js development, covering database, Next.js, React, and data handling. Derived from [code-good-practices.md](mdc:docs/guidance/code-good-practices.md).
+globs: ["**/*.{ts,tsx,js,jsx,sql}", "next.config.mjs"]
+alwaysApply: true
+---
+- **General Note**: These rules are based on learnings documented in [code-good-practices.md](mdc:docs/guidance/code-good-practices.md). Refer to it for more detailed explanations and original context.
+
+- **Database Schema Changes and References**
+  - **Use Consistent Naming Convention**: Employ `snake_case` for all database table and column names.
+  - **Update References After Renaming**: After renaming tables or columns in migrations, perform a global search for the old name in the codebase and update all references.
+  - **Thoroughly Review Schema Changes**: Carefully review and test all changes after schema modifications.
+  - **Maintain Schema Documentation**: Keep schema documentation up-to-date.
+  - **Use Constants for Table Names**: Define table names as constants in a central location to avoid typos and facilitate updates.
+    ```typescript
+    // ✅ DO: Define table names as constants
+    const LABOR_TABLE = 'labor' as const;
+    const REGIONAL_PRICE_TABLE = 'labor_regional_price' as const;
+
+    // Supabase query using constants
+    // const { data, error } = await client
+    //   .from(LABOR_TABLE)
+    //   .select(`id, name, ${REGIONAL_PRICE_TABLE}(*)`);
+    ```
+  - **Update Code to Reflect Schema Changes**: Ensure your queries use the correct, current table and column names.
+    ```typescript
+    // ❌ DON'T: Use outdated table names in queries
+    // const { data, error } = await client
+    //   .from('labor')
+    //   .select(`
+    //     id,
+    //     name,
+    //     category,
+    //     unit,
+    //     laborregionalprice(*) // Old table name
+    //   `);
+
+    // ✅ DO: Use current table names in queries
+    // const { data, error } = await client
+    //   .from('labor')
+    //   .select(`
+    //     id,
+    //     name,
+    //     category,
+    //     unit,
+    //     labor_regional_price(*) // New table name
+    //   `);
+    ```
+
+- **Multiple Foreign Key Relationships**
+  - **Ensure Clean Migrations**: When renaming tables or altering relationships, handle foreign key constraints properly in migrations to avoid duplicates.
+  - **Check Existing Relationships**: Before adding new foreign keys, verify if relationships that serve the same purpose already exist.
+  - **Use Explicit Relationship References**: If multiple relationships exist between tables, specify which one to use in your Supabase queries.
+    ```typescript
+    // ❌ DON'T: Assume Supabase will pick the correct relationship if multiple exist
+    // const { data, error } = await client
+    //   .from('labor')
+    //   .select(`
+    //     id,
+    //     name,
+    //     labor_regional_price(*) // Ambiguous if multiple FKs exist
+    //   `);
+
+    // ✅ DO: Explicitly specify the foreign key relationship
+    // const { data, error } = await client
+    //   .from('labor')
+    //   .select(`
+    //     id,
+    //     name,
+    //     labor_regional_price!labor_regional_price_labor_id_fkey(*) // Explicit FK name
+    //   `);
+    ```
+  - **Remove Redundant Constraints**: Create migrations to remove old or duplicate foreign key constraints.
+
+- **Next.js Server vs Client Components**
+  - **Separate Concerns**: Keep server-side logic and client-side logic in separate components/files.
+    - Server components can fetch data and pass it as props.
+    - Client components handle interactivity and browser-specific APIs.
+  - **Use `'use client';` Directive**: Mark components that use client-side hooks (e.g., `useState`, `useEffect`, `useRouter`) or event handlers with the `'use client';` directive at the top of the file.
+  - **Avoid Server-Only APIs in Client Components**: Do not import and use server-only APIs (e.g., `cookies()` from `next/headers`) directly in Client Components. Fetch data in Server Components or Route Handlers and pass it as props.
+    ```typescript
+    // ❌ DON'T: Use server-only APIs in a Client Component
+    // _components/client-edit-labor-page.tsx
+    // 'use client';
+    // import { cookies } from 'next/headers'; // ERROR
+
+    // async function someAction() {
+    //   const cookieStore = cookies(); // This will fail
+    // }
+
+    // ✅ DO: Fetch data in Server Components and pass as props
+    // app/some-page/page.tsx (Server Component)
+    // import { getSupabaseServerClient } from '@kit/supabase/server-client';
+    // import ClientEditLaborPage from './_components/client-edit-labor-page';
+
+    // async function EditLaborPage({ params }) {
+    //   const client = getSupabaseServerClient();
+    //   // Fetch initialData server-side
+    //   const { data: initialData } = await client.from('labors').select('*').eq('id', params.id).single();
+    //   return <ClientEditLaborPage laborId={params.id} initialData={initialData} />;
+    // }
+
+    // _components/client-edit-labor-page.tsx (Client Component)
+    // 'use client';
+    // import { useRouter } from 'next/navigation'; // OK
+
+    // export default function ClientEditLaborPage({ laborId, initialData }) {
+    //   // Use client-side APIs and initialData here
+    // }
+    ```
+  - **Organize Client Components**: Consider placing client components in a `_components` subfolder within your route segments.
+
+- **React Infinite Update Loops**
+  - **Specify Correct Dependencies**: Always provide accurate and complete dependency arrays for `useEffect`, `useCallback`, and `useMemo` hooks.
+    ```typescript
+    // ❌ DON'T: Omit or provide incorrect dependencies
+    // useEffect(() => {
+    //   setState(someNewValueDerivedFromProp);
+    // }); // Missing dependency: someNewValueDerivedFromProp or its source
+
+    // ✅ DO: Include all reactive values in dependency arrays
+    // useEffect(() => {
+    //   if (initialRegionalPrices?.length) {
+    //     setDisplayedRegionalPrices(initialRegionalPrices);
+    //   }
+    // }, [initialRegionalPrices]); // Correct dependency
+    ```
+  - **Conditional State Updates**: Avoid updating state unconditionally within the component body or in `useEffect` hooks that run on every render.
+  - **Memoize Functions Passed as Props**: Use `useCallback` for functions passed down to child components, especially if they are used in `useEffect` dependencies or `React.memo` comparisons in the child.
+  - **Initialize State from Props Correctly**: If initializing state from props, do it once or ensure updates are handled correctly via `useEffect` with proper dependencies. Avoid simply copying props to state if it leads to stale data.
+
+- **Dynamic Route Parameters in Next.js App Router**
+  - **Use `async` for Page Components**: Page components that handle dynamic route parameters and perform data fetching should be `async` functions.
+  - **Define Props Interfaces**: Create clear TypeScript interfaces for your page component props, including the structure of `params`.
+  - **Await `params` if it's a Promise**: In Server Components within the App Router, `params` can be a Promise. Ensure you `await` it before accessing its properties.
+    ```typescript
+    // ✅ DO: Properly handle params in async Server Components
+    // interface EditLaborPageProps {
+    //   params: { id: string }; // Or Promise<{ id: string }> if applicable, check Next.js version specifics
+    // }
+
+    // export default async function EditLaborPage({ params }: EditLaborPageProps) {
+    //   // If params can be a Promise (older Next.js versions or specific scenarios):
+    //   // const resolvedParams = await params;
+    //   // const laborId = resolvedParams.id;
+    //   // For current Next.js App Router, params is typically already resolved for Server Components:
+    //   const laborId = params.id;
+    //   // ... fetch data using laborId ...
+    //   return <div>Labor ID: {laborId}</div>;
+    // }
+    ```
+    *(Note: The original example showed `params: Promise<{ id: string; }>`. Current Next.js App Router Server Components usually receive resolved `params`. Clarify based on project's Next.js version if issues arise.)*
+  - **Error Handling**: Implement error handling for cases where parameters might be missing or invalid.
+
+- **External Image Domains in Next.js**
+  - **Configure `remotePatterns`**: Use `next.config.mjs` (or `.js`) to configure allowed hostnames for external images used with `next/image`.
+    ```javascript
+    // ✅ DO: Configure remotePatterns in next.config.mjs
+    // /** @type {import('next').NextConfig} */
+    // const nextConfig = {
+    //   images: {
+    //     remotePatterns: [
+    //       {
+    //         protocol: 'https',
+    //         hostname: 'example.com',
+    //         port: '',
+    //         pathname: '/images/**',
+    //       },
+    //       // For more general use, but be mindful of security:
+    //       {
+    //         protocol: 'https',
+    //         hostname: '**.example.com', // Allow all subdomains of example.com
+    //       },
+    //       // To allow any HTTPS domain (use with caution):
+    //       // {
+    //       //   protocol: 'https',
+    //       //   hostname: '**',
+    //       // }
+    //     ],
+    //   },
+    // };
+    // module.exports = nextConfig;
+    ```
+  - **Security Consideration**: Allowing all hostnames (`hostname: '**'`) can have security implications. Be as specific as possible with patterns.
+  - **Environment-Specific Configurations**: Consider stricter patterns for production environments versus development.
+  - **`unoptimized` Prop**: For specific external images where optimization is not needed or problematic, the `unoptimized` prop on `next/image` can be an alternative to configuring `remotePatterns`.
+
+- **Bulk Data Import/Export with Excel/Spreadsheets**
+  - **Design Clear Excel Templates**:
+    - Include an "Instructions" sheet explaining columns, formats, and rules.
+    - Provide example data rows.
+    - Use separate sheets for distinct entities and their relationships.
+    - Use unique IDs (`id` column) for entities to establish references. In relationship sheets, use foreign key columns (e.g., `entity_a_id`, `entity_b_id`).
+    - Use consistent and clear sheet names and column headers, ideally mapping closely to database structures.
+  - **Implement Robust Backend Processing**:
+    - **Validate Files**: Check file type and presence of expected sheet names.
+    - **Validate Data**: For each row, validate required fields, data types, formats, and business rules.
+    - **Process in Logical Order**: Handle sheets based on dependencies (e.g., parent entities before child/relationship entities).
+    - **Use Upsert Logic**: Determine whether to create new records or update existing ones based on provided IDs.
+    - **Provide Detailed Feedback**: Return comprehensive statistics (records processed, created, updated, errors) and specific error messages for failed rows (including sheet and row identifiers).
+    - **Use Database Transactions**: Wrap the entire import process for a single file in a database transaction to ensure atomicity.
+    - **Utilize Libraries**: Use reliable libraries for parsing Excel files. 
+
+### Next.js API Route Handlers
+
+When creating Next.js API route handlers, especially those wrapped with higher-order components like `withAuth`, it's crucial to follow these practices to avoid common runtime and TypeScript errors.
+### 1. Forcing Node.js Runtime for Backend Operations
+
+Many API routes rely on Node.js-specific modules (e.g., `crypto`, `bcrypt`, `mongoose`) that are not available in the default Edge runtime.
+
+- **Rule**: If an API route or any of its dependencies use Node.js-native APIs, you **must** export `export const runtime = 'nodejs';` at the top of the file.
+- **Reason**: This forces the route to run in a Node.js environment, ensuring compatibility and preventing runtime errors that occur when Node.js modules are called in the Edge runtime.
+
+**Example:**
+```typescript
+// src/app/api/auth/login/route.ts
+import { withAuth } from '@/lib/auth/middleware'; // Uses 'crypto' and 'bcrypt'
+
+// Force Node.js runtime to support the modules used in authentication
+export const runtime = 'nodejs';
+
+export const POST = withAuth(async (request, user) => {
+  // Handler logic...
+});
+```
+
+### 2. Typing HOC Context Parameters Generically
+
+When using a higher-order component (HOC) like `withAuth` that passes down route parameters through a `context` object, you must use a generic type signature.
+
+- **Rule**: The `context` parameter in a route handler wrapped by `withAuth` should be typed as `context?: { params: Record<string, string> }`.
+- **Reason**: The HOC does not have knowledge of the specific dynamic parameter names (e.g., `organizationId`, `memberId`). Using a specific type like `{ params: { organizationId: string } }` will create a TypeScript mismatch with the HOC's expected signature. The generic `Record<string, string>` is compatible and avoids these errors.
+
+**Example:**
+
+**❌ Incorrect (Too Specific):**
+```typescript
+// This will cause a TypeScript error with withAuth
+export const GET = withAuth(async (
+  request: NextRequest,
+  user: any,
+  context?: { params: { organizationId: string; ruleId: string } }
+) => {
+  // ...
+});
+```
+
+**✅ Correct (Generic):**
+```typescript
+// This is compatible with the withAuth HOC
+export const GET = withAuth(async (
+  request: NextRequest,
+  user: any,
+  context?: { params: Record<string, string> }
+) => {
+  // Safely parse the specific params you expect inside the handler
+  const { organizationId, ruleId } = context.params;
+  // ... your logic
+});
+```
+
+- **Dual Authentication (DualAuth) Implementation**
+  - **Authentication Strategy Support**: Always implement support for both user JWT authentication and service API key authentication in the same endpoints.
+    ```typescript
+    // ✅ DO: Use withDualAuth to support both authentication types
+    import { withDualAuth } from '@/lib/auth/middleware';
+
+    export const runtime = 'nodejs'; // Required for crypto operations
+
+    export const GET = withDualAuth(async (
+      request: NextRequest,
+      authContext: ServiceAuthContext,
+      context?: { params: Record<string, string> }
+    ) => {
+      // authContext provides information about authentication type
+      if (authContext.type === 'user') {
+        // Handle user JWT authentication
+        const user = authContext.user;
+        console.log('User authenticated:', user.id);
+      } else if (authContext.type === 'service') {
+        // Handle service API key authentication
+        const serviceKey = authContext.serviceKey;
+        console.log('Service authenticated:', serviceKey);
+      }
+      
+      // Your endpoint logic here
+    });
+    ```
+
+  - **Header Convention Standards**: Use consistent header naming for different authentication types.
+    ```typescript
+    // ✅ DO: Use standard header conventions
+    // JWT Authentication: Authorization: Bearer <jwt_token>
+    // Service Authentication: X-Service-API-Key: <api_key>
+    
+    // Client-side example:
+    // const headers = {
+    //   'Content-Type': 'application/json',
+    //   // For user authentication:
+    //   'Authorization': `Bearer ${jwtToken}`,
+    //   // OR for service authentication:
+    //   'X-Service-API-Key': process.env.SERVICE_API_KEY
+    // };
+    ```
+
+  - **Force Node.js Runtime**: Always export Node.js runtime for DualAuth endpoints due to crypto dependencies.
+    ```typescript
+    // ✅ DO: Force Node.js runtime for authentication middleware
+    export const runtime = 'nodejs';
+    
+    // ❌ DON'T: Omit runtime export - will cause crypto module errors
+    // Missing: export const runtime = 'nodejs';
+    ```
+
+  - **ServiceAuthContext Interface**: Implement a comprehensive authentication context interface.
+    ```typescript
+    // ✅ DO: Define comprehensive ServiceAuthContext interface
+    interface ServiceAuthContext {
+      type: 'user' | 'service';
+      user?: {
+        id: string;
+        email: string;
+        role: string;
+        organizationId?: string;
+      };
+      serviceKey?: string;
+      isAuthenticated: boolean;
+      authMethod: 'jwt' | 'service_key';
+    }
+    ```
+
+  - **Generic Context Parameter Typing**: Use generic types for HOC context parameters to avoid TypeScript conflicts.
+    ```typescript
+    // ✅ DO: Use generic Record type for context params
+    export const GET = withDualAuth(async (
+      request: NextRequest,
+      authContext: ServiceAuthContext,
+      context?: { params: Record<string, string> }
+    ) => {
+      // Extract specific params inside the handler
+      const { organizationId, ruleId } = context?.params || {};
+    });
+
+    // ❌ DON'T: Use specific param types - causes HOC type conflicts
+    // context?: { params: { organizationId: string; ruleId: string } }
+    ```
+
+  - **Environment Variable Management**: Properly manage API keys and authentication secrets.
+    ```typescript
+    // ✅ DO: Use environment variables for service API keys
+    // .env.local or environment configuration:
+    // MCP_SERVICE_API_KEY=your-secure-service-api-key
+    // JWT_SECRET=your-jwt-secret
+    
+    // In middleware:
+    const serviceApiKey = process.env.MCP_SERVICE_API_KEY;
+    const jwtSecret = process.env.JWT_SECRET;
+    
+    if (!serviceApiKey || !jwtSecret) {
+      throw new Error('Missing required authentication environment variables');
+    }
+    ```
+
+  - **Error Response Consistency**: Provide consistent error responses for both authentication types.
+    ```typescript
+    // ✅ DO: Use consistent error response format
+    const unauthorizedResponse = (message: string) => 
+      NextResponse.json(
+        { error: 'Unauthorized', message },
+        { status: 401 }
+      );
+
+    // Usage in middleware:
+    if (!isValidJWT && !isValidServiceKey) {
+      return unauthorizedResponse('Invalid or missing authentication credentials');
+    }
+    ```
+
+  - **Authentication Priority Logic**: Implement clear precedence when both auth types are present.
+    ```typescript
+    // ✅ DO: Define clear authentication precedence
+    const withDualAuth = (handler: DualAuthHandler) => {
+      return async (request: NextRequest, context?: RouteContext) => {
+        // 1. Check for JWT token first (user authentication)
+        const authHeader = request.headers.get('authorization');
+        if (authHeader?.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          const user = await validateJWT(token);
+          if (user) {
+            return handler(request, { type: 'user', user, isAuthenticated: true, authMethod: 'jwt' }, context);
+          }
+        }
+
+        // 2. Fall back to service API key authentication
+        const serviceKey = request.headers.get('x-service-api-key');
+        if (serviceKey && serviceKey === process.env.MCP_SERVICE_API_KEY) {
+          return handler(request, { type: 'service', serviceKey, isAuthenticated: true, authMethod: 'service_key' }, context);
+        }
+
+        // 3. Neither authentication method succeeded
+        return unauthorizedResponse('Authentication required');
+      };
+    };
+    ```
+
+  - **Role-Based Access Control Integration**: Support different permission models for user vs service authentication.
+    ```typescript
+    // ✅ DO: Implement role-based access for different auth types
+    export const DELETE = withDualAuth(async (
+      request: NextRequest,
+      authContext: ServiceAuthContext,
+      context?: { params: Record<string, string> }
+    ) => {
+      if (authContext.type === 'user') {
+        // User-based permissions
+        if (!authContext.user?.role.includes('admin')) {
+          return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
+        }
+      } else if (authContext.type === 'service') {
+        // Service keys typically have full access, but can be restricted
+        console.log('Service authentication - full access granted');
+      }
+      
+      // Proceed with deletion logic
+    });
+    ```
+
+  - **Logging and Monitoring**: Implement comprehensive logging for both authentication types.
+    ```typescript
+    // ✅ DO: Log authentication events for monitoring
+    const logAuthEvent = (authContext: ServiceAuthContext, endpoint: string, action: string) => {
+      const logData = {
+        timestamp: new Date().toISOString(),
+        endpoint,
+        action,
+        authType: authContext.type,
+        authMethod: authContext.authMethod,
+        userId: authContext.type === 'user' ? authContext.user?.id : undefined,
+        serviceKey: authContext.type === 'service' ? 'REDACTED' : undefined,
+      };
+      
+      console.log('Auth Event:', JSON.stringify(logData));
+    };
+
+    // Usage in handlers:
+    logAuthEvent(authContext, '/api/organizations', 'GET');
+    ```
+
+  - **Testing Strategy**: Implement comprehensive tests for both authentication methods.
+    ```typescript
+    // ✅ DO: Test both authentication methods
+    describe('DualAuth Endpoint Tests', () => {
+      test('should authenticate with valid JWT token', async () => {
+        const response = await fetch('/api/endpoint', {
+          headers: {
+            'Authorization': `Bearer ${validJWTToken}`,
+            'Content-Type': 'application/json'
+          }
+        });
+        expect(response.status).toBe(200);
+      });
+
+      test('should authenticate with valid service API key', async () => {
+        const response = await fetch('/api/endpoint', {
+          headers: {
+            'X-Service-API-Key': process.env.MCP_SERVICE_API_KEY,
+            'Content-Type': 'application/json'
+          }
+        });
+        expect(response.status).toBe(200);
+      });
+
+      test('should reject requests with no authentication', async () => {
+        const response = await fetch('/api/endpoint');
+        expect(response.status).toBe(401);
+      });
+    });
+    ```
+
+  - **Security Best Practices**: Implement additional security measures for dual authentication.
+    ```typescript
+    // ✅ DO: Implement security best practices
+    
+    // 1. Rate limiting per authentication type
+    const rateLimitByAuthType = (authContext: ServiceAuthContext) => {
+      if (authContext.type === 'user') {
+        // More restrictive rate limiting for user requests
+        return checkRateLimit(authContext.user?.id, { requests: 100, window: '1h' });
+      } else {
+        // More permissive for service requests
+        return checkRateLimit('service', { requests: 1000, window: '1h' });
+      }
+    };
+
+    // 2. API key rotation support
+    const isValidServiceKey = (key: string) => {
+      const validKeys = [
+        process.env.MCP_SERVICE_API_KEY,
+        process.env.MCP_SERVICE_API_KEY_BACKUP // For rotation
+      ].filter(Boolean);
+      
+      return validKeys.includes(key);
+    };
+
+    // 3. JWT token validation with proper error handling
+    const validateJWT = async (token: string): Promise<User | null> => {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JWTPayload;
+        return await getUserById(decoded.userId);
+      } catch (error) {
+        console.error('JWT validation failed:', error.message);
+        return null;
+      }
+    };
+    ```
+
+--- 

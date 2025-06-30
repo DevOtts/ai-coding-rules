@@ -1,0 +1,72 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Service Layer Data Transformation
+
+This rule ensures that data is correctly transformed between different layers of the application (e.g., API to Service, Service to DB Model) to prevent format and type mismatches.
+
+## **Problem Pattern: Service Layer Data Format Mismatches**
+- **Symptoms**: Data reaches a service (like `ContentService` or a MongoDB service) in the wrong format, causing unexpected errors.
+- **Root Cause**: Inconsistent data structures between what an API endpoint provides and what a service method expects.
+- **Time to Debug**: Can take 20+ minutes tracing data flow through multiple service calls.
+
+### **Solution: Standardized Data Transformation**
+
+```typescript
+// ✅ DO: Create explicit transformation functions to map from API data to service-layer interfaces.
+
+function transformApiToInteraction(apiData: any): IInteraction {
+  return {
+    organizationId: apiData.organization_id,
+    sourceType: apiData.source_type,
+    sourceId: apiData.source_id,
+    title: apiData.title || generateInteractionTitle(apiData), // Ensure required fields are handled
+    content: apiData.content,
+    author: apiData.author,
+    timestamp: apiData.timestamp ? new Date(apiData.timestamp) : new Date(),
+    topicIds: apiData.topic_ids || [],
+    sensitivityLevelId: apiData.sensitivity_level_id,
+    allowedRoles: apiData.allowed_roles || ['member'],
+    allowedUsers: apiData.allowed_users || [],
+    metadata: apiData.metadata || {}
+  };
+}
+
+// ✅ DO: Use the transformation function consistently before calling the service.
+const interactionForService = transformApiToInteraction(validatedApiData);
+const interaction = await contentService.createInteraction(
+  interactionForService,
+  options
+);
+```
+
+### **File Processing and Ingestion Patterns**
+
+To prevent errors during file ingestion, validate constraints early in the process.
+
+```typescript
+// ✅ DO: Validate file constraints at the beginning of the API handler.
+if (!validateDocumentFormat(file)) {
+  return contentIngestionError('document', 'Unsupported format');
+}
+
+if (!validateFileSize(file)) {
+  return contentIngestionError('document', 'File size exceeds limit');
+}
+```
+
+### **Optional Chaining for Nested Properties**
+
+When creating nested data structures, especially for metadata, use optional chaining to prevent `TypeError: Cannot read properties of undefined`.
+
+```typescript
+// ✅ DO: Use optional chaining for potentially undefined nested properties.
+metadata: {
+  originalFile: file.name,
+  chunkIndex: i + 1,
+  totalChunks: chunks.length,
+  title: interaction.metadata?.title || `${file.name} - Chunk ${i + 1}`
+}
+```

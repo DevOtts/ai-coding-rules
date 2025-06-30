@@ -1,0 +1,564 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Vercel Deployment Best Practices for Next.js
+
+This rule documents essential practices and common pitfalls to avoid when deploying Next.js applications to Vercel, based on real deployment challenges and solutions.
+
+## **Critical Pre-Deployment Checklist**
+
+### **1. Dependencies & Package Management**
+- **Keep lockfiles in sync**: Always commit updated lockfiles (`pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`) when dependencies change
+- **Separate dev/prod dependencies correctly**: Move build tools, testing frameworks, and development utilities to `devDependencies`
+- **Add missing dependencies**: Check for runtime dependencies that may be missing (e.g., `aws4`, `@aws-sdk/credential-providers`)
+
+```json
+// ✅ DO: Proper dependency separation
+{
+  "dependencies": {
+    "next": "15.3.2",
+    "react": "19.1.0",
+    "mongoose": "8.15.0"
+  },
+  "devDependencies": {
+    "task-master-ai": "0.14.0",
+    "@faker-js/faker": "9.5.8",
+    "jest": "29.7.0",
+    "@types/node": "22.15.21"
+  }
+}
+
+// ❌ DON'T: Large dev tools in production dependencies
+{
+  "dependencies": {
+    "task-master-ai": "0.14.0", // This should be in devDependencies
+    "@faker-js/faker": "9.5.8"  // This should be in devDependencies
+  }
+}
+```
+
+### **2. Next.js Configuration Optimization**
+
+**Essential `next.config.js` settings for Vercel:**
+
+```javascript
+// ✅ DO: Optimized next.config.js for Vercel deployment
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  // Skip build-time checks to avoid blocking deployments
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    ignoreBuildErrors: true, // Only for deployment fixes, remove after resolving issues
+  },
+  
+  // Bundle size optimization
+  experimental: {
+    optimizePackageImports: ['lodash', 'date-fns', 'ramda'],
+  },
+  
+  // Exclude large files from serverless functions
+  outputFileTracingExcludes: {
+    '*': [
+      '.next/cache/**/*',
+      'node_modules/@faker-js/**/*',
+      'node_modules/canvas/**/*',
+      'node_modules/puppeteer/**/*',
+      'coverage/**/*',
+      '**/*.test.{js,ts,tsx}',
+      '**/*.spec.{js,ts,tsx}',
+      'e2e-tests/**/*',
+      'docs/**/*',
+    ],
+  },
+  
+  // Webpack optimizations
+  webpack: (config, { isServer }) => {
+    if (isServer) {
+      // Exclude dev dependencies from server bundle
+      config.externals = config.externals || [];
+      config.externals.push({
+        '@faker-js/faker': 'commonjs @faker-js/faker',
+        'task-master-ai': 'commonjs task-master-ai',
+      });
+    }
+    return config;
+  },
+};
+
+module.exports = nextConfig;
+```
+
+### **3. Vercel Configuration**
+
+**Create `vercel.json` for explicit framework specification:**
+
+```json
+{
+  "framework": "nextjs",
+  "functions": {
+    "src/app/api/**/*.ts": {
+      "maxDuration": 30
+    }
+  }
+}
+```
+
+### **4. Bundle Size Management**
+
+**Create comprehensive `.vercelignore` to exclude unnecessary files:**
+
+```gitignore
+# Cache and build artifacts
+.next/cache/
+.next/trace
+node_modules/.cache/
+*.tsbuildinfo
+
+# Development and testing
+coverage/
+.nyc_output/
+e2e-tests/
+**/*.test.{js,ts,tsx,jsx}
+**/*.spec.{js,ts,tsx,jsx}
+__tests__/
+jest.config.js
+jest.setup.js
+
+# Documentation and guides
+docs/
+README.md
+*.md
+!package.json
+
+# Development tools and configs
+.vscode/
+.idea/
+*.log
+.env.local
+.env.development
+.env.test
+
+# Large development dependencies
+node_modules/@faker-js/
+node_modules/canvas/
+node_modules/puppeteer/
+
+# Scripts and utilities (if not needed for build)
+scripts/
+debug-*.js
+test-*.js
+reset-*.js
+*.http
+```
+
+## **Common Build Errors & Solutions**
+
+### **1. Export Detail Missing Error**
+**Error**: `ENOENT: no such file or directory, lstat '/vercel/path0/.next/export-detail.json'`
+
+**Solution**: Create a post-build script:
+
+```javascript
+// scripts/create-export-detail.js
+const fs = require('fs');
+const path = require('path');
+
+const exportDetail = {
+  version: 1,
+  outDirectory: '.next',
+  success: true,
+  static: false, // Important: false for dynamic Next.js apps
+  exportType: 'server'
+};
+
+const exportDetailPath = path.join('.next', 'export-detail.json');
+fs.writeFileSync(exportDetailPath, JSON.stringify(exportDetail, null, 2));
+
+console.log('✅ Created export-detail.json');
+```
+
+**Update package.json:**
+```json
+{
+  "scripts": {
+    "build": "next build && node scripts/create-export-detail.js"
+  }
+}
+```
+
+### **2. Runtime Specification for API Routes**
+**Error**: Node.js modules not available in Edge runtime
+
+**Solution**: Add runtime export to API routes using Node.js features:
+
+```typescript
+// ✅ DO: Force Node.js runtime for API routes using Node.js modules
+// src/app/api/auth/route.ts
+import { connectToDB } from '@/lib/db/utils';
+import bcrypt from 'bcryptjs';
+
+// Essential for routes using Node.js modules
+export const runtime = 'nodejs';
+
+export async function POST(request: Request) {
+  // Node.js modules work here
+}
+```
+
+### **3. Client Component Suspense Requirements**
+**Error**: `useSearchParams` and similar hooks causing hydration issues
+
+**Solution**: Wrap with Suspense boundary:
+
+```tsx
+// ✅ DO: Wrap client components using Next.js hooks
+import { Suspense } from 'react';
+
+function LoginFormWithParams() {
+  const searchParams = useSearchParams();
+  // Component logic...
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <LoginFormWithParams />
+    </Suspense>
+  );
+}
+```
+
+### **4. Import Reference Errors**
+**Error**: Module not found or incorrect function imports
+
+**Solution**: Verify all imports and exports:
+
+```typescript
+// ✅ DO: Ensure consistent import/export names
+// In utils file
+export async function connectToDB() { /* ... */ }
+
+// In consuming file
+import { connectToDB } from '@/lib/db/utils'; // Not connectToDatabase
+
+// ✅ DO: Add missing exports
+export { SomeType, AnotherUtility } from './internal-module';
+```
+
+## **Bundle Size Optimization Strategies**
+
+### **1. Identify Large Dependencies**
+```bash
+# Analyze bundle size
+npx @next/bundle-analyzer
+
+# Check node_modules size
+du -sh node_modules/* | sort -hr | head -20
+```
+
+### **2. Move Development Tools to devDependencies**
+Large packages that should be in `devDependencies`:
+- `@faker-js/faker` (3+ MB)
+- `task-master-ai` (if used for development only)
+- Testing frameworks (`jest`, `@testing-library/*`)
+- Type definition packages (`@types/*`)
+- Build tools (`eslint`, `prettier`, etc.)
+
+### **3. Webpack Externalization**
+```javascript
+// In next.config.js webpack function
+if (isServer) {
+  config.externals.push({
+    // Externalize large dev dependencies
+    '@faker-js/faker': 'commonjs @faker-js/faker',
+    'puppeteer': 'commonjs puppeteer',
+  });
+}
+```
+
+## **Environment Variables & Deployment**
+
+### **Required Environment Variables**
+Document and verify all required environment variables:
+
+```bash
+# Essential variables for most Next.js apps
+MONGODB_URI=mongodb+srv://...
+MONGODB_DB=your_database_name
+JWT_SECRET=your-super-secret-key
+JWT_EXPIRES_IN=7d
+APP_URL=https://your-app.vercel.app
+
+# Optional but commonly needed
+NEXTAUTH_SECRET=your-nextauth-secret
+NEXTAUTH_URL=https://your-app.vercel.app
+```
+
+### **Environment Variable Validation**
+```typescript
+// ✅ DO: Validate environment variables at startup
+const requiredEnvVars = [
+  'MONGODB_URI',
+  'MONGODB_DB', 
+  'JWT_SECRET',
+  'APP_URL'
+];
+
+requiredEnvVars.forEach(envVar => {
+  if (!process.env[envVar]) {
+    throw new Error(`Missing required environment variable: ${envVar}`);
+  }
+});
+```
+
+## **Deployment Workflow**
+
+### **1. Pre-Deployment Steps**
+1. **Update lockfile**: Run `npm install` / `pnpm install` / `yarn install`
+2. **Test build locally**: Run `npm run build` to catch issues early
+3. **Check bundle size**: Ensure `.next` folder is reasonable size
+4. **Verify environment variables**: Check Vercel dashboard settings
+5. **Commit all changes**: Including lockfile updates
+
+### **2. Post-Deployment Verification**
+1. **Check function logs**: Monitor Vercel function logs for runtime errors
+2. **Test critical paths**: Verify authentication, database connections, API endpoints
+3. **Monitor performance**: Check Core Web Vitals and response times
+
+## **Common Anti-Patterns to Avoid**
+
+### **❌ DON'T: Manual lockfile edits**
+```bash
+# Never manually edit lockfiles
+# Always regenerate them with package manager
+```
+
+### **❌ DON'T: Ignore build warnings in production**
+```javascript
+// Don't leave this in production code
+typescript: {
+  ignoreBuildErrors: true, // Remove after fixing issues
+}
+```
+
+### **❌ DON'T: Include dev dependencies in production bundle**
+```json
+// Wrong dependency placement
+"dependencies": {
+  "jest": "29.7.0", // Should be in devDependencies
+}
+```
+
+### **❌ DON'T: Skip runtime specifications for Node.js APIs**
+```typescript
+// This will fail in Edge runtime
+import fs from 'fs'; // Without export const runtime = 'nodejs';
+```
+
+## **Troubleshooting Quick Reference**
+
+| Error Type | Common Cause | Quick Fix |
+|------------|--------------|-----------|
+| Lockfile sync error | `package.json` changed without updating lockfile | Run `npm install` and commit lockfile |
+| Bundle size exceeded | Large dev dependencies included | Move to `devDependencies` and update `.vercelignore` |
+| Export detail missing | Vercel expecting static export | Add post-build script to create export-detail.json |
+| Runtime module error | Node.js modules in Edge runtime | Add `export const runtime = 'nodejs';` |
+| Hydration mismatch | Client hooks without Suspense | Wrap with `<Suspense>` boundary |
+| Import not found | Incorrect import/export names | Verify all import statements and exports |
+
+## **Prevention Checklist for New Projects**
+
+- [ ] Set up proper dependency separation from the start
+- [ ] Configure `next.config.js` with Vercel optimizations
+- [ ] Create `.vercelignore` early in development
+- [ ] Add environment variable validation
+- [ ] Set up proper runtime specifications for API routes
+- [ ] Use Suspense boundaries for client components
+- [ ] Regular bundle size monitoring
+- [ ] Keep lockfiles committed and up-to-date
+
+Following these practices will significantly reduce deployment issues and ensure smooth Vercel deployments for Next.js applications.
+
+## **Service Architecture Patterns for Optimal Deployment**
+
+### **1. Singleton Service Instances**
+When using service factory patterns or singleton services, ensure proper memory management and avoid memory leaks in serverless environments.
+
+```typescript
+// ✅ DO: Proper singleton pattern with lazy initialization
+let organizationService: OrganizationService | null = null;
+
+export function getOrganizationService(): OrganizationService {
+  if (!organizationService) {
+    organizationService = new OrganizationService();
+  }
+  return organizationService;
+}
+
+// ✅ DO: Provide reset function for testing/cleanup
+export function resetServices(): void {
+  organizationService = null;
+  // Reset other service instances
+}
+```
+
+### **2. Service Factory Bundle Optimization**
+
+**Problem**: Large service factories can increase bundle size if they import all services upfront.
+
+**Solution**: Use dynamic imports and lazy loading for service factories:
+
+```typescript
+// ✅ DO: Lazy service loading in factories
+export class MongoDbServiceFactory {
+  private serviceCache: Map<string, any> = new Map();
+  
+  async createOrganizationService() {
+    if (!this.serviceCache.has('organization')) {
+      // Dynamic import to reduce initial bundle size
+      const { OrganizationService } = await import('./services/organization-service');
+      this.serviceCache.set('organization', new OrganizationService());
+    }
+    return this.serviceCache.get('organization');
+  }
+}
+
+// ❌ DON'T: Import all services at the top level
+import { OrganizationService } from './services/organization-service';
+import { InteractionsService } from './services/interactions-service';
+// ... 20+ more imports that may not be used in every request
+```
+
+### **3. Database Connection Management in Serverless**
+
+**Critical for Vercel**: Serverless functions need proper connection pooling and cleanup.
+
+```typescript
+// ✅ DO: Proper connection management for serverless
+let cachedConnection: mongoose.Connection | null = null;
+
+export async function connectToDB(): Promise<mongoose.Connection> {
+  if (cachedConnection && cachedConnection.readyState === 1) {
+    return cachedConnection;
+  }
+  
+  const connection = await mongoose.connect(process.env.MONGODB_URI!, {
+    // Optimize for serverless
+    maxPoolSize: 10, // Maintain up to 10 socket connections
+    serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
+    socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+    bufferCommands: false, // Disable mongoose buffering
+    bufferMaxEntries: 0 // Disable mongoose buffering
+  });
+  
+  cachedConnection = connection;
+  return connection;
+}
+
+// ❌ DON'T: Create new connections for every request
+export async function connectToDB(): Promise<mongoose.Connection> {
+  return mongoose.connect(process.env.MONGODB_URI!); // Creates new connection each time
+}
+```
+
+### **4. Service Provider Tree-Shaking**
+
+**Ensure service providers don't prevent tree-shaking:**
+
+```typescript
+// ✅ DO: Export individual functions for better tree-shaking
+export function getOrganizationService() {
+  return getMongo().createOrganizationService();
+}
+
+export function getUserService() {
+  return getMongo().createUserService();
+}
+
+// ❌ DON'T: Export large objects that prevent tree-shaking
+export const serviceProvider = {
+  organization: () => getMongo().createOrganizationService(),
+  user: () => getMongo().createUserService(),
+  // ... 20+ more services that may not be needed
+};
+```
+
+### **5. Conditional Service Loading**
+
+For large applications, conditionally load services based on API route needs:
+
+```typescript
+// ✅ DO: API route-specific service loading
+// In organization API routes
+export const runtime = 'nodejs';
+
+// Only import services needed for this route
+import { getOrganizationService } from '@/lib/services/provider';
+
+export async function GET() {
+  const orgService = getOrganizationService(); // Lazy loaded
+  // ...
+}
+
+// ❌ DON'T: Import all services in shared modules
+import { 
+  getOrganizationService,
+  getUserService,
+  getInteractionsService,
+  // ... 20+ more services
+} from '@/lib/services/provider';
+```
+
+## **Memory Management in Serverless Functions**
+
+### **1. Service Instance Cleanup**
+```typescript
+// ✅ DO: Provide cleanup mechanisms for service instances
+export class ServiceManager {
+  private services: Map<string, any> = new Map();
+  
+  async cleanup(): Promise<void> {
+    for (const [key, service] of this.services.entries()) {
+      if (service && typeof service.cleanup === 'function') {
+        await service.cleanup();
+      }
+    }
+    this.services.clear();
+  }
+}
+
+// Use in API routes for cleanup
+export async function POST(request: Request) {
+  try {
+    // ... route logic
+  } finally {
+    // Optional: Cleanup for long-running functions
+    await serviceManager.cleanup();
+  }
+}
+```
+
+### **2. Avoid Memory Leaks with Event Listeners**
+```typescript
+// ✅ DO: Proper event listener cleanup in services
+export class MongoService {
+  private connection: mongoose.Connection;
+  
+  constructor(connection: mongoose.Connection) {
+    this.connection = connection;
+    this.connection.on('error', this.handleError.bind(this));
+  }
+  
+  cleanup(): void {
+    this.connection.removeListener('error', this.handleError);
+  }
+  
+  private handleError(error: Error): void {
+    // Handle error
+  }
+}
+```

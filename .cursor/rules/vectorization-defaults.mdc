@@ -1,0 +1,66 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Vectorization and Indexing Defaults
+
+This rule helps prevent common search and indexing issues by ensuring that content is properly vectorized and stored in Weaviate.
+
+## **Problem Pattern: Content Not Searchable**
+- **Symptoms**: New content (documents, interactions) is not appearing in semantic search results.
+- **Root Cause**: Forgetting to enable vectorization during the content creation process.
+- **Time to Debug**: Can be significant, as it requires checking the entire ingestion pipeline.
+
+### **Vectorization Configuration Rule**
+
+```typescript
+// ✅ DO: Default to `vectorizeContent: true` for all content that should be searchable.
+const interaction = await contentService.createInteraction(interactionData, {
+  vectorizeContent: true, // This should be the default for most cases
+  autoClassifyTopics: validatedData.autoClassifyTopics || false
+});
+
+// ❌ DON'T: Set `vectorizeContent: false` unless you explicitly want to prevent content from being indexed and searchable.
+```
+
+### **Content Chunking Configuration**
+
+For long documents and conversations, use semantic chunking to ensure the content is broken down effectively for vector search.
+
+```typescript
+// ✅ DO: Use semantic chunking for better context preservation in Weaviate.
+const chunks = chunkContentSemantic(textContent, targetTokens, maxTokens);
+```
+
+---
+
+## Weaviate Integration Best Practices
+
+### **Problem: Storing MongoDB Objects Instead of IDs**
+- **Symptoms**: Weaviate queries fail or return unexpected results for fields like `organization_id`.
+- **Root Cause**: Passing a MongoDB `ObjectId` object to Weaviate instead of a string representation.
+
+```typescript
+// ❌ DON'T: Store full MongoDB objects or ObjectIds in Weaviate properties.
+const properties = {
+  organization_id: interactionDocument.organizationId, // This stores an ObjectId object, which is incorrect.
+};
+
+// ✅ DO: Convert all IDs to strings before sending them to Weaviate.
+const properties = {
+  organization_id: interactionDocument.organizationId?.toString() || '',
+};
+```
+
+### **Problem: Missing Multi-Organization Context**
+- **Symptoms**: Search results lack visibility into all organizations involved in an interaction or conversation.
+- **Root Cause**: The `participant_orgs` field is not being populated during indexing.
+
+```typescript
+// ✅ DO: Always populate the `participant_orgs` field for multi-organization visibility.
+const properties = {
+  // ... other properties
+  participant_orgs: this.buildParticipantOrgsForInteraction(interaction),
+};
+```

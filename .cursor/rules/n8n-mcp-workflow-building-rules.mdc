@@ -1,0 +1,430 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+
+# N8N MCP Workflow Building Rules
+
+*Comprehensive guidelines for building robust n8n workflows for MCP (Model Context Protocol) servers*
+
+## Table of Contents
+1. [Authentication & Security Rules](mdc:#authentication--security-rules)
+2. [Workflow Architecture Rules](mdc:#workflow-architecture-rules)
+3. [API Endpoint Configuration Rules](mdc:#api-endpoint-configuration-rules)
+4. [Tool Description Standards](mdc:#tool-description-standards)
+5. [Error Handling & Resilience Rules](mdc:#error-handling--resilience-rules)
+6. [Testing & Validation Rules](mdc:#testing--validation-rules)
+7. [Documentation & Maintenance Rules](mdc:#documentation--maintenance-rules)
+8. [Performance & Optimization Rules](mdc:#performance--optimization-rules)
+
+---
+
+## Authentication & Security Rules
+
+### Rule 1: Always Implement Dual Authentication
+**Context**: Our API supports both user JWT tokens and service API keys for maximum flexibility.
+
+**Implementation**:
+```json
+{
+  "sendHeaders": true,
+  "headerParameters": {
+    "parameters": [
+      {
+        "name": "X-Service-API-Key",
+        "value": "={{ $vars.MCP_SERVICE_API_KEY }}"
+      },
+      {
+        "name": "Authorization", 
+        "value": "Bearer {{ $json.arguments.token }}"
+      }
+    ]
+  }
+}
+```
+
+**Key Points**:
+- Use `X-Service-API-Key` for service-to-service authentication
+- Support `Authorization: Bearer` for user authentication
+- Backend must use `withDualAuth` middleware
+- Never hardcode authentication values - use environment variables
+
+### Rule 2: Secure Environment Variable Management
+**Required Variables**:
+```
+MCP_SERVICE_API_KEY=your_service_key_here
+OPASCOPE_API_BASE_URL=https://your-api.domain.com/
+```
+
+**Security Standards**:
+- Service API keys should be at least 32 characters
+- Use different keys for development/staging/production
+- Rotate keys regularly
+- Never commit keys to version control
+
+### Rule 3: Implement Proper Authorization Context
+**Pattern**:
+- Always pass user context when available
+- Support both authenticated and service contexts
+- Validate organization access permissions
+- Implement role-based access control
+
+---
+
+## Workflow Architecture Rules
+
+### Rule 4: Single Trigger, Multiple Tools Pattern
+**Structure**:
+```json
+{
+  "nodes": [
+    {
+      "type": "@n8n/n8n-nodes-langchain.mcpTrigger",
+      "name": "MCP Server Trigger",
+      "webhookId": "unique-webhook-id"
+    },
+    {
+      "type": "n8n-nodes-base.httpRequestTool",
+      "name": "Tool Name",
+      "connected_to": "MCP Server Trigger"
+    }
+  ]
+}
+```
+
+**Benefits**:
+- Single entry point for all MCP requests
+- Consistent routing and error handling
+- Easier to maintain and debug
+- Better performance with shared connections
+
+### Rule 5: Logical Tool Grouping and Naming
+**Naming Convention**:
+- Use descriptive, action-oriented names
+- Group related functionality (e.g., "Auth Login", "Auth Register", "Auth Logout")
+- Maintain consistent prefixes for related operations
+- Use verb-noun format when possible
+
+**Example Groups**:
+- Authentication: `Auth Login`, `Auth Register`, `Auth Logout`
+- Organizations: `Organizations List`, `Organizations Create`, `Organizations Update`
+- Content: `Content Sources List`, `Content Ingest Documents`
+- Search: `Search Semantic`, `Search Vector`, `Search Image`
+
+### Rule 6: Proper Node Positioning for Workflow Clarity
+**Layout Strategy**:
+- Arrange nodes in logical flow order
+- Group related nodes vertically or horizontally
+- Leave adequate spacing between groups
+- Use consistent positioning patterns across similar workflows
+
+---
+
+## API Endpoint Configuration Rules
+
+### Rule 7: HTTP Method Accuracy is Critical
+**Common Patterns**:
+```json
+{
+  "method": "GET",    // For retrieving data, health checks
+  "method": "POST",   // For creating resources, complex queries
+  "method": "PUT",    // For full resource updates
+  "method": "PATCH",  // For partial updates
+  "method": "DELETE"  // For resource deletion
+}
+```
+
+**Critical**: Mismatched HTTP methods cause 405 errors and break functionality.
+
+### Rule 8: Dynamic URL Construction
+**Pattern for Variable URLs**:
+```json
+{
+  "url": "={{ $vars.OPASCOPE_API_BASE_URL }}api/resource/{{ $json.arguments.resourceId }}"
+}
+```
+
+**Best Practices**:
+- Always use environment variables for base URLs
+- Validate required path parameters
+- Handle URL encoding for special characters
+- Support both absolute and relative path construction
+
+### Rule 9: Request Body Handling Standards
+**For JSON Bodies**:
+```json
+{
+  "sendBody": true,
+  "specifyBody": "json",
+  "jsonBody": "={\n  \"field1\": {{ JSON.stringify($json.arguments.field1) }},\n  \"field2\": {{ $json.arguments.field2 || defaultValue }}\n}"
+}
+```
+
+**Critical Practices**:
+- Always use `JSON.stringify()` for string values to prevent injection
+- Provide sensible defaults for optional fields
+- Validate required fields before sending
+- Handle nested objects and arrays properly
+
+### Rule 10: Comprehensive Header Configuration
+**Standard Headers**:
+```json
+{
+  "headerParameters": {
+    "parameters": [
+      {
+        "name": "X-Service-API-Key",
+        "value": "={{ $vars.MCP_SERVICE_API_KEY }}"
+      },
+      {
+        "name": "Content-Type",
+        "value": "application/json"
+      },
+      {
+        "name": "Authorization",
+        "value": "Bearer {{ $json.arguments.token }}"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Tool Description Standards
+
+### Rule 11: Comprehensive Tool Descriptions
+**Required Elements**:
+1. **Purpose**: Clear statement of what the tool does
+2. **Input Format**: Exact object structure with required/optional fields
+3. **Example Usage**: Complete working example
+4. **Return Value**: Description of expected response
+
+**Template**:
+```
+Use this tool to [specific action] [specific resource/context].
+
+You must send an object with the following shape:
+
+{
+  "field1": "<required field description>",
+  "field2": "<optional field description>",
+  "field3": <type information>
+}
+
+For example:
+
+{
+  "field1": "example_value",
+  "field2": "optional_example",
+  "field3": 42
+}
+
+Returns [description of response format and content].
+```
+
+### Rule 12: Parameter Documentation Standards
+**Format for Complex Parameters**:
+- Use clear type indicators (`<string>`, `<number>`, `<boolean>`, `<array>`)
+- Specify required vs optional fields explicitly
+- Provide realistic example values
+- Document any special formatting requirements
+- Include validation rules when relevant
+
+### Rule 13: Error Case Documentation
+**Include Common Error Scenarios**:
+- Authentication failures
+- Validation errors
+- Resource not found cases
+- Permission denied scenarios
+- Rate limiting conditions
+
+---
+
+## Error Handling & Resilience Rules
+
+### Rule 14: Timeout Configuration
+**Standard Timeouts**:
+```json
+{
+  "options": {
+    "timeout": 30000  // 30 seconds for most operations
+  }
+}
+```
+
+**Timeout Guidelines**:
+- Standard operations: 30 seconds
+- File uploads/processing: 60-120 seconds
+- Health checks: 10 seconds
+- Complex AI operations: 90 seconds
+
+### Rule 15: Graceful Error Response Handling
+**Error Response Format**:
+```json
+{
+  "success": false,
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "Human readable message",
+    "details": {}
+  }
+}
+```
+
+**Error Handling Strategy**:
+- Always return consistent error formats
+- Include actionable error messages
+- Log errors for debugging
+- Provide error recovery suggestions when possible
+
+### Rule 16: Circuit Breaker Pattern Implementation
+**For Critical Services**:
+- Implement health check endpoints
+- Monitor service availability
+- Provide fallback responses when services are down
+- Include service status in tool responses
+
+---
+
+## Testing & Validation Rules
+
+### Rule 17: End-to-End Testing Requirements
+**Test Coverage Must Include**:
+- Service authentication flows
+- User authentication flows
+- All HTTP methods for each endpoint
+- Error scenarios and edge cases
+- Performance under load
+
+**Test Structure**:
+```javascript
+// Example from our E2E tests
+async function testServiceAuthentication() {
+  // Test service API key authentication
+  // Test various endpoints with service auth
+  // Validate responses and error handling
+}
+```
+
+### Rule 18: Tool Description Validation
+**Validation Checklist**:
+- [ ] All required parameters documented
+- [ ] Example JSON is valid and complete
+- [ ] Description matches actual API behavior
+- [ ] Error cases are documented
+- [ ] Input/output types are accurate
+
+### Rule 19: Workflow Validation Before Deployment
+**Pre-deployment Checks**:
+- [ ] All environment variables configured
+- [ ] HTTP methods match API requirements
+- [ ] Authentication headers properly configured
+- [ ] Tool descriptions are complete and accurate
+- [ ] Error handling is implemented
+- [ ] Timeouts are appropriate
+
+---
+
+## Documentation & Maintenance Rules
+
+### Rule 20: Version Control and Change Tracking
+**File Naming Convention**:
+- `v1-[workflow-name]-mcp-workflow.json`
+- `v2-[workflow-name]-mcp-workflow.json`
+- Include version notes in commit messages
+
+**Change Documentation**:
+- Track major changes in separate files
+- Document breaking changes clearly
+- Maintain migration guides for version updates
+
+### Rule 21: Configuration Documentation
+**Required Documentation**:
+- Environment variable requirements
+- Setup and deployment instructions
+- Troubleshooting guides
+- API endpoint mapping
+- Security considerations
+
+### Rule 22: Monitoring and Observability
+**Implement Monitoring For**:
+- Request/response times
+- Error rates by endpoint
+- Authentication success/failure rates
+- Resource usage patterns
+- User activity patterns
+
+---
+
+## Performance & Optimization Rules
+
+### Rule 23: Request Optimization
+**Best Practices**:
+- Minimize payload sizes
+- Use efficient query parameters
+- Implement pagination for large datasets
+- Cache frequently requested data
+- Use compression when appropriate
+
+### Rule 24: Connection Management
+**Optimization Strategies**:
+- Reuse connections when possible
+- Implement connection pooling
+- Set appropriate keep-alive settings
+- Monitor connection health
+
+### Rule 25: Resource Management
+**Guidelines**:
+- Set appropriate memory limits
+- Implement request queuing for high load
+- Monitor and alert on resource usage
+- Implement graceful degradation under load
+
+---
+
+## Implementation Checklist
+
+### Before Starting Development:
+- [ ] Define authentication strategy
+- [ ] Set up environment variables
+- [ ] Plan tool organization and naming
+- [ ] Define error handling patterns
+
+### During Development:
+- [ ] Follow HTTP method conventions
+- [ ] Write comprehensive tool descriptions
+- [ ] Implement proper error handling
+- [ ] Test authentication flows
+- [ ] Validate all endpoints
+
+### Before Deployment:
+- [ ] Complete end-to-end testing
+- [ ] Validate tool descriptions
+- [ ] Check environment configuration
+- [ ] Review security settings
+- [ ] Document any custom configurations
+
+### After Deployment:
+- [ ] Monitor error rates
+- [ ] Validate performance metrics
+- [ ] Test all authentication methods
+- [ ] Verify all tool functionality
+- [ ] Update documentation as needed
+
+---
+
+## Lessons Learned Summary
+
+Our journey building the v3-opascope-manager-mcp-workflow taught us that:
+
+1. **Authentication flexibility is crucial** - Supporting both service and user auth patterns makes the MCP server much more versatile
+2. **HTTP method accuracy is non-negotiable** - Method mismatches cause immediate failures
+3. **Comprehensive tool descriptions prevent integration issues** - Well-documented tools reduce debugging time significantly
+4. **Error handling needs to be consistent** - Standardized error formats make troubleshooting much easier
+5. **Testing must be comprehensive** - Both authentication methods and all endpoints need thorough testing
+6. **Environment configuration is critical** - Proper variable management prevents deployment issues
+7. **Documentation saves time** - Good documentation prevents repeating the same mistakes
+
+These rules represent hard-won knowledge from building a production-ready MCP server workflow. Following them will save significant development time and prevent common pitfalls. 

@@ -1,0 +1,131 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Cursor Rule: USE_CONTEXT7_IF_UNDERDETERMINED
+
+## Summary
+
+AI should proactively consult the **Context7 MCP Server** when it encounters ambiguity, lack of confidence, or shows signs of cognitive struggle (e.g., looping, failing to fix bugs). Context7 is a high-value repository of internal documentation that should be treated as a primary knowledge source in these cases.
+
+---
+
+## Trigger Conditions
+
+Trigger this rule **if any** of the following conditions are true:
+
+### [1] Semantic Ambiguity
+
+- The current context lacks a clear definition or usage pattern for a method, class, or symbol.
+
+  Examples:
+  - API used without any visible contract
+  - Unknown or undefined reference
+  - Missing inheritance or implementation detail
+
+### [2] Cognitive Struggle Behavior
+
+AI shows signs of struggle or degraded reasoning, including:
+
+- Repeating multiple invalid attempts to fix the same issue
+- Getting stuck in user back-and-forth cycles trying to clarify the same concept
+- Fixing one bug while introducing another (non-converging)
+- Rephrasing the same plan without adding new insight
+- Asking the user to explain a symbol instead of looking it up
+
+### [3] Low Internal Confidence
+
+- AI is generating completions with low token-level log probabilities or fallback phrases (e.g., “I’m not sure,” “It might be…”)
+- Heuristic triggers like:
+  - “Guessing intent”
+  - “Could be this or that”
+  - “Assuming this means…”
+
+### [4] Domain-Specific Relevance
+
+- The subject appears to belong to internal or domain-specific systems such as:
+  - Internal SDKs
+  - Custom base services
+  - Proprietary architectural layers
+
+---
+
+## Exclusions
+
+Do **not** use Context7 if:
+
+- The referenced code is part of well-known public libraries (e.g., .NET standard)
+- The user has already provided explicit definitions or clear documentation inline
+- The assistant has recently retrieved and cached the documentation from Context7
+- The issue is trivial or low-risk (e.g., cosmetic code style questions)
+
+---
+
+## Behavior
+
+If triggered:
+
+1. **Query Context7 MCP Server** using best disambiguated name (e.g., `Namespace.Class.Method`)
+2. **Load relevant documentation** into the reasoning context
+3. **Retry reasoning** with the enhanced context
+4. Optionally **log or annotate** the context use:  
+
+## [Context7 Reference: Loaded documentation for SymbolName]
+
+````
+
+---
+
+## Rationale
+
+Internal documentation often holds crucial behavioral or structural explanations not inferable from surface code. This rule ensures AI retrieves that when:
+
+- It doesn’t know enough
+- It keeps guessing or failing
+- It’s hitting diminishing returns
+
+This behavior reflects the best practices of human developers: **pause, research, and retry** with higher context.
+
+---
+
+## Example 1: Unknown API
+
+```csharp
+var result = InvoiceEngine.Normalize(data);
+````
+
+* `InvoiceEngine.Normalize` is unknown
+* No definition visible
+* Assistant is guessing behavior
+
+→ **Use Context7 to resolve `InvoiceEngine.Normalize` before continuing**
+
+---
+
+## Example 2: Bug Fix Loop
+
+```plaintext
+User: This causes a null reference.
+AI: Add a null check.
+User: Still crashes.
+AI: Try initializing.
+User: That didn’t help.
+AI: Try wrapping in try-catch.
+User: It’s still null.
+```
+
+* Assistant is looping without gaining clarity
+* Symbol origin is unclear
+* Context7 likely has a contract or explanation
+
+→ **Use Context7 to understand object lifecycle or init pattern**
+
+---
+
+## Maintenance Notes
+
+* Tune confidence and repetition thresholds based on session telemetry
+* Consider limiting Context7 lookups per X minutes unless user insists
+* Long-term: build a "struggle detector" heuristic model to invoke this rule dynamically
+

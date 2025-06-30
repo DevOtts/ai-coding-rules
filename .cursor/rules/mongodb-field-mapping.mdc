@@ -1,0 +1,77 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# MongoDB Field Mapping & Validation
+
+This rule prevents common MongoDB validation errors by enforcing correct field mapping between the API layer and MongoDB models.
+
+## **Problem Pattern: Required Field Validation Failures**
+- **Symptoms**: `ValidationError: Path 'fieldName' is required` in MongoDB operations.
+- **Root Cause**: API layer and MongoDB schema field name mismatches (e.g., `organization_id` vs. `organizationId`).
+- **Time to Debug**: Often 30+ minutes tracing through service layers.
+
+### **Quick Fix Strategy: Immediate Field Mapping Check**
+
+```typescript
+// ❌ DON'T: Assume API field names match MongoDB schema.
+const interactionData = {
+  organization_id: data.organization_id,  // API uses organization_id
+  source_type: data.source_type,          // API uses source_type
+  source_id: data.source_id               // API uses source_id
+};
+
+// ✅ DO: Always verify MongoDB schema requirements first.
+// Check the actual Mongoose model for exact field names.
+const interactionData = {
+  organizationId: data.organization_id,   // MongoDB expects organizationId
+  sourceType: data.source_type,           // MongoDB expects sourceType  
+  sourceId: data.source_id,               // MongoDB expects sourceId
+  title: data.title || generateTitle(data), // Don't forget other required fields
+};
+```
+
+### **MongoDB Field Mapping Rules**
+
+**Interaction Model Common Mismatches:**
+```typescript
+// API Layer → MongoDB Model Field Mapping
+{
+  organization_id → organizationId
+  source_type → sourceType  
+  source_id → sourceId
+  topic_ids → topicIds
+  sensitivity_level_id → sensitivityLevelId
+  allowed_roles → allowedRoles
+  allowed_users → allowedUsers
+}
+```
+
+**InternalConversation Model Common Mismatches:**
+```typescript
+// API Layer → MongoDB Model Field Mapping  
+{
+  organization_tags → organizationTags
+  source_type → sourceType
+  source_id → sourceId
+  topic_ids → topicIds
+  sensitivity_level_id → sensitivityLevelId
+  allowed_roles → allowedRoles
+  allowed_users → allowedUsers
+}
+```
+
+### **Common TypeScript Type Issues: ObjectId vs. String**
+
+```typescript
+// ✅ DO: Always handle ObjectId to string conversion safely, especially for Weaviate.
+const organizationId = interaction.organizationId?.toString() || '';
+const topicIds = interaction.topicIds?.map(id => id?.toString() || '') || [];
+```
+
+### **Pre-Debug Validation Checklist**
+- [ ] Check the MongoDB model schema file for exact field names (`*.ts` in `src/lib/db/models/`).
+- [ ] Verify all `required: true` fields are provided in the data object.
+- [ ] Confirm data types match the schema's expectations (e.g., `String`, `ObjectId`, `Date`).
+- [ ] Test the field mapping at service boundaries before sending data to MongoDB services.

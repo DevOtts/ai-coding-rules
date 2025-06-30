@@ -1,0 +1,91 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+---
+description: Structured workflow for medium-sized coding tasks involving multiple files, refactoring, or complex debugging
+globs: **/*.cs, **/*.ts, **/*.js, **/*.py, **/*.java
+alwaysApply: true
+---
+
+- **Pre-Coding Analysis Phase:**
+  - **Error Analysis**: Thoroughly analyze all errors, issues, and inconsistencies in the codebase
+  - **Solution Planning**: Think through how to fix all identified issues systematically
+  - **Task Breakdown**: Create a detailed plan breaking the work into small, manageable tasks
+  - **Track Document Creation**: Generate a JSON tracking document with task status
+  - **Review Gate**: Wait for user authorization before starting implementation
+
+- **Task Tracking Requirements:**
+  - **Location**: Create tracking JSON files in `/track-tasks/` folder at project root
+  - **Naming**: Use descriptive filenames: `track-{feature/component-name}-{timestamp}.json`
+  - **Status Values**: `new`, `working`, `concluded`, `blocked`
+  - **Completion**: When all tasks completed, rename file with `ok-` prefix
+
+- **Required Track JSON Structure:**
+  ```json
+  {
+    "project_name": "string",
+    "task_type": "refactor|debug|feature|fix",
+    "created_at": "ISO_timestamp",
+    "total_tasks": "number", 
+    "completed_tasks": "number",
+    "overall_status": "new|in_progress|completed|blocked",
+    "tasks": [
+      {
+        "id": "task_001",
+        "description": "Detailed task description",
+        "status": "new|working|concluded|blocked",
+        "estimated_time": "string",
+        "files_affected": ["array of file paths"],
+        "dependencies": ["array of task_ids"],
+        "notes": "Additional context or requirements"
+      }
+    ]
+  }
+  ```
+
+- **Implementation Workflow:**
+  - **Step 1**: Present analysis findings and proposed plan
+  - **Step 2**: Create and show track JSON document
+  - **Step 3**: **WAIT** for user review and authorization
+  - **Step 4**: Execute tasks in dependency order
+  - **Step 5**: Update track JSON status after each task
+  - **Step 6**: Provide progress updates with remaining tasks
+  - **Step 7**: Upon completion, rename track file with `ok-` prefix
+
+- **Communication Pattern:**
+  ```typescript
+  // ✅ DO: Reference existing similar files for consistency
+  // Based on @CustomizationController.cs @AccountController.cs, 
+  // let's refactor @PlatformController.cs
+
+  // ✅ DO: Explain reasoning behind decisions
+  // This approach follows the established pattern in AccountController
+  
+  // ❌ DON'T: Start coding without analysis and approval
+  // ❌ DON'T: Skip the track JSON creation step
+  ```
+
+- **Quality Gates:**
+  - **Code Consistency**: Ensure code follows existing project patterns
+  - **Error Resolution**: Verify all identified errors are addressed
+  - **Testing**: Test critical paths before marking tasks as concluded
+  - **Documentation**: Document any deviations from original plan
+
+- **Task Scope Definition:**
+  - **Medium Tasks**: Multiple files, refactoring, complex debugging, controller fixes
+  - **Not This Rule**: For huge/complex tasks, escalate to [taskmaster.mdc](mdc:.cursor/rules/taskmaster.mdc)
+
+- **Example Workflow:**
+  ```markdown
+  // ✅ DO: Follow this pattern
+  1. "I need to analyze the errors in PlatformController.cs first"
+  2. "Here's my plan broken into 5 tasks with dependencies"
+  3. "I've created track-platform-controller-20241227.json"
+  4. "Please review and authorize before I start coding"
+  5. [Wait for approval]
+  6. "Starting task_001: Fixing validation errors..."
+  7. "Task_001 concluded. Moving to task_002..."
+  8. "All tasks completed. Renaming to ok-track-platform-controller-20241227.json"
+  ```

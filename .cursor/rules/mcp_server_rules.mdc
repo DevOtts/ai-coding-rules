@@ -1,0 +1,57 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Working with MCP Server best practices
+---
+
+## Defining Tool Descriptions for AI Agents (MCP-Compatible)**
+
+**Every tool used in an MCP Server workflow must include a natural language description that:**
+
+1. ✅ Clearly explains the tool's purpose.
+2. ✅ Explicitly defines the required input structure inside `arguments`.
+3. ✅ Provides a realistic example in JSON format.
+4. ⚠️ Avoids ambiguity or generic descriptions — AI Agents rely solely on this to build requests.
+
+---
+
+**✅ Example (GOOD):**
+
+```
+Use this tool to search saved meeting transcripts using a semantic query.
+
+Input must be:
+{
+  "query": "<string>",
+  "organizationId": "<string>",
+  "limit": <number>,
+  "filters": {}
+}
+
+Example:
+{
+  "query": "show me meetings about MVP pricing",
+  "organizationId": "org_opascope",
+  "limit": 5,
+  "filters": {}
+}
+```
+
+**🚫 Example (BAD):**
+
+```
+Search meetings using semantic similarity.
+```
+
+---
+
+**📌 Why it matters:**
+AI Agents have no way of knowing your expected JSON schema unless you explicitly describe it. This is the only method the Agent uses to build a correct `arguments` object.
+
+Use this rule when configuring **any** n8n HTTP request node exposed through an MCP Server.
+
+---
+
+Would you like me to save this to your internal workspace notes or export it as markdown for documentation?
