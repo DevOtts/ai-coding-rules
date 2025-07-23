@@ -1,0 +1,634 @@
+# Clean Architecture Implementation Guide
+
+This rule enforces Clean Architecture principles based on our established codebase patterns and prevents common architectural violations.
+
+## **Critical Architecture Violations to Prevent**
+
+### **❌ NEVER: Direct Repository Calls in Controllers**
+```typescript
+// ❌ CRITICAL VIOLATION: Controller directly accessing repository
+export class TopicsController extends BaseController {
+  async createTopic(request: NextRequest): Promise<NextResponse> {
+    // This violates clean architecture - controllers should NOT directly call repositories
+    const repository = Container.getInstance().resolve('TopicRepository');
+    const topic = await repository.save(topicData); // WRONG!
+    return NextResponse.json(topic);
+  }
+}
+
+// ✅ CORRECT: Controller orchestrates through use cases
+export class TopicsController extends BaseController {
+  constructor(private createTopicUseCase: CreateTopicUseCase) {
+    super({ autoConnectDatabase: true });
+  }
+
+  async createTopic(request: NextRequest): Promise<NextResponse> {
+    const result = await this.createTopicUseCase.execute(topicData);
+    return this.handleResponse(result);
+  }
+}
+```
+
+### **❌ NEVER: Cross-Layer Violations**
+```typescript
+// ❌ WRONG: Domain entity importing infrastructure
+import { MongoTopicModel } from '../infrastructure/models/TopicModel';
+
+// ❌ WRONG: Use case directly importing database models
+import { OrganizationModel } from '../infrastructure/models/OrganizationModel';
+
+// ❌ WRONG: Infrastructure importing use cases
+import { CreateTopicUseCase } from '../application/use-cases/CreateTopicUseCase';
+```
+
+## **Layer Structure & Responsibilities**
+
+### **1. Presentation Layer** (`src/presentation/`, `src/app/api/`)
+**Responsibility**: Handle HTTP requests, coordinate with application layer, format responses
+
+**Key Components**:
+- **Controllers**: Extend `BaseController`, orchestrate use cases
+- **Middleware**: Authentication, validation, error handling
+- **DTOs**: Request/response transformation
+
+```typescript
+// ✅ CORRECT: Controller Pattern
+export class OrganizationsController extends BaseController {
+  constructor(
+    private createOrgUseCase: CreateOrganizationUseCase,
+    private updateOrgUseCase: UpdateOrganizationUseCase
+  ) {
+    super({ autoConnectDatabase: true }); // Database connection at presentation layer
+  }
+
+  async createOrganization(request: NextRequest): Promise<NextResponse> {
+    return this.executeOperation(async () => {
+      const dto = await this.validateRequest(request, CreateOrganizationRequestSchema);
+      const result = await this.createOrgUseCase.execute(dto);
+      return this.handleResponse(result);
+    });
+  }
+}
+```
+
+### **2. Application Layer** (`src/application/`)
+**Responsibility**: Business logic orchestration, use case implementation, application services
+
+**Key Components**:
+- **Use Cases**: Single responsibility, orchestrate domain operations
+- **Application Services**: Cross-cutting concerns, external integrations
+- **DTOs**: Data transfer between layers
+
+```typescript
+// ✅ CORRECT: Use Case Pattern
+export class CreateTopicUseCase extends UseCase<CreateTopicRequest, CreateTopicResponse> {
+  constructor(
+    private topicRepository: ITopicRepository,
+    private organizationRepository: IOrganizationRepository,
+    private auditService: IAuditService
+  ) {}
+
+  async execute(request: CreateTopicRequest): Promise<CreateTopicResponse> {
+    // 1. Validate business rules
+    await this.validateTopicCreation(request);
+    
+    // 2. Create domain entity
+    const topic = Topic.create({
+      name: TopicName.create(request.name),
+      organizationId: new OrganizationId(request.organizationId)
+    });
+
+    // 3. Persist through repository
+    const savedTopic = await this.topicRepository.save(topic);
+    
+    // 4. Audit the operation
+    await this.auditService.logTopicCreation(savedTopic);
+
+    return { topic: savedTopic };
+  }
+}
+
+// ✅ CORRECT: Application Service Pattern
+export class TopicApplicationService extends BaseApplicationService {
+  constructor() {
+    super({ autoConnect: false }); // Trust controller establishes connection
+  }
+
+  async processTopicHierarchy(parentId: string): Promise<TopicHierarchy> {
+    return this.execute(async () => {
+      // Complex business logic orchestration
+      const parent = await this.topicRepository.findById(new TopicId(parentId));
+      const children = await this.topicRepository.findByParentId(parent.id);
+      return this.buildHierarchy(parent, children);
+    });
+  }
+}
+```
+
+### **3. Domain Layer** (`src/domain/`)
+**Responsibility**: Core business entities, value objects, domain services, business rules
+
+**Key Components**:
+- **Entities**: Business objects with identity and lifecycle
+- **Value Objects**: Immutable objects representing concepts
+- **Domain Services**: Cross-entity business logic
+- **Repository Interfaces**: Abstract data access contracts
+
+```typescript
+// ✅ CORRECT: Domain Entity Pattern
+export class Topic extends BaseEntity<TopicId> {
+  private constructor(
+    id: TopicId,
+    private name: TopicName,
+    private organizationId: OrganizationId,
+    private parentTopicId?: TopicId
+  ) {
+    super(id);
+  }
+
+  static create(props: CreateTopicProps): Topic {
+    const id = TopicId.generate();
+    const topic = new Topic(id, props.name, props.organizationId, props.parentTopicId);
+    topic.validate();
+    return topic;
+  }
+
+  // Business logic methods
+  public updateName(newName: TopicName): void {
+    this.validateNameChange(newName);
+    this.name = newName;
+    this.markAsModified();
+  }
+
+  public canBeDeleted(): boolean {
+    // Domain business rule
+    return !this.hasActiveChildren() && !this.hasLinkedContent();
+  }
+}
+
+// ✅ CORRECT: Value Object Pattern
+export class TopicName extends BaseValueObject {
+  private constructor(private readonly value: string) {
+    super();
+    this.validate();
+  }
+
+  static create(value: string): TopicName {
+    return new TopicName(value);
+  }
+
+  public getValue(): string {
+    return this.value;
+  }
+
+  protected validate(): void {
+    if (!this.value || this.value.trim().length === 0) {
+      throw new InvalidTopicNameError('Topic name cannot be empty');
+    }
+    if (this.value.length > 100) {
+      throw new InvalidTopicNameError('Topic name cannot exceed 100 characters');
+    }
+  }
+}
+```
+
+### **4. Infrastructure Layer** (`src/infrastructure/`)
+**Responsibility**: External concerns, data persistence, third-party integrations
+
+**Key Components**:
+- **Repositories**: Concrete implementations of domain interfaces
+- **Models**: Database schema definitions
+- **External Services**: API clients, message queues
+- **Database Connection**: Connection management and configuration
+
+```typescript
+// ✅ CORRECT: Repository Implementation Pattern
+export class TopicRepository extends BaseRepository<Topic, ITopicDocument, TopicId> {
+  constructor() {
+    super(TopicModel, 'TopicRepository');
+  }
+
+  async findByOrganizationId(organizationId: OrganizationId): Promise<Topic[]> {
+    return this.executeOperation(async () => {
+      const documents = await this.model.find({
+        organizationId: organizationId.value
+      }).exec();
+      
+      return documents
+        .map(doc => this.mapToDomain(doc))
+        .filter((topic): topic is Topic => topic !== null);
+    });
+  }
+
+  async findTopicHierarchy(parentId: TopicId): Promise<Topic[]> {
+    return this.executeOperation(async () => {
+      const pipeline = [
+        { $match: { parentTopicId: parentId.value } },
+        { $lookup: { /* ... complex aggregation ... */ } }
+      ];
+      
+      const documents = await this.model.aggregate(pipeline).exec();
+      return this.mapMultipleToDomain(documents);
+    });
+  }
+
+  protected mapToDomain(document: ITopicDocument): Topic | null {
+    if (!document || !document._id) return null;
+    
+    return Topic.fromPersistence({
+      id: document._id.toString(),
+      name: document.name,
+      organizationId: document.organizationId,
+      parentTopicId: document.parentTopicId,
+      createdAt: document.createdAt,
+      updatedAt: document.updatedAt
+    });
+  }
+}
+```
+
+## **Database Connection Management Patterns**
+
+### **Three-Layer Connection Strategy**
+Based on our established patterns that eliminated 64 manual `connectToDB()` calls:
+
+```typescript
+// ✅ CORRECT: Controller Layer (Auto-Connect)
+export class AccessRulesController extends BaseController {
+  constructor(private useCase: CreateAccessRuleUseCase) {
+    super({ autoConnectDatabase: true }); // Controller establishes connection
+  }
+}
+
+// ✅ CORRECT: Application Layer (Reuse Connection)
+export class AccessRuleApplicationService extends BaseApplicationService {
+  constructor() {
+    super({ autoConnect: false }); // Reuse controller's connection
+  }
+}
+
+// ✅ CORRECT: Infrastructure Layer (executeOperation wrapper)
+export class AccessRuleRepository extends BaseRepository<AccessRule, IAccessRuleDocument, AccessRuleId> {
+  async findByUserId(userId: string): Promise<AccessRule[]> {
+    return this.executeOperation(async () => {
+      // Database operations with automatic connection handling
+      const documents = await this.model.find({ userId }).exec();
+      return this.mapMultipleToDomain(documents);
+    });
+  }
+}
+
+// ❌ NEVER: Manual database connections
+// Never use: await connectToDB();
+// Never use: mongoose.connect();
+// Never use: manual connection management
+```
+
+## **Dependency Injection & Container Patterns**
+
+### **Proper DI Registration**
+```typescript
+// ✅ CORRECT: DI Module Pattern
+export class TopicDIModule implements DIModule {
+  register(container: Container): void {
+    // Repository interfaces to implementations
+    container.register('ITopicRepository', TopicRepository);
+    container.register('IOrganizationRepository', OrganizationRepository);
+    
+    // Use cases with dependencies
+    container.register('CreateTopicUseCase', CreateTopicUseCase, [
+      'ITopicRepository',
+      'IOrganizationRepository',
+      'IAuditService'
+    ]);
+    
+    // Controllers with use case dependencies
+    container.register('TopicsController', TopicsController, [
+      'CreateTopicUseCase',
+      'UpdateTopicUseCase',
+      'DeleteTopicUseCase'
+    ]);
+  }
+}
+
+// ✅ CORRECT: Container Resolution
+const controller = Container.getInstance().resolve<TopicsController>('TopicsController');
+```
+
+## **Error Handling Patterns**
+
+### **Layer-Specific Error Handling**
+```typescript
+// ✅ CORRECT: Domain Layer Errors
+export class InvalidTopicNameError extends DomainError {
+  constructor(message: string) {
+    super(message, 'INVALID_TOPIC_NAME');
+  }
+}
+
+// ✅ CORRECT: Application Layer Errors
+export class TopicNotFoundError extends ServiceError {
+  constructor(topicId: string) {
+    super(`Topic with ID ${topicId} not found`, 'TOPIC_NOT_FOUND');
+  }
+}
+
+// ✅ CORRECT: Infrastructure Layer Errors
+export class TopicRepositoryError extends RepositoryError {
+  constructor(operation: string, cause?: Error) {
+    super(`Topic repository operation failed: ${operation}`, 'TOPIC_REPOSITORY_ERROR', cause);
+  }
+}
+```
+
+## **API Route Handler Patterns**
+
+### **Next.js App Router with Clean Architecture**
+```typescript
+// ✅ CORRECT: API Route Implementation
+// app/api/topics/route.ts
+export const POST = withDualAuth(async (
+  request: NextRequest,
+  authContext: ServiceAuthContext
+) => {
+  const controller = Container.getInstance().resolve<TopicsController>('TopicsController');
+  return controller.createTopic(request, authContext);
+});
+
+// ✅ CORRECT: Route with Parameters
+// app/api/topics/[topicId]/route.ts
+export const GET = withDualAuth(async (
+  request: NextRequest,
+  authContext: ServiceAuthContext,
+  context?: { params: Record<string, string> }
+) => {
+  const resolvedParams = await Promise.resolve(context.params);
+  const topicId = resolvedParams.topicId || resolvedParams.id;
+  
+  const controller = Container.getInstance().resolve<TopicsController>('TopicsController');
+  return controller.getTopicById(request, topicId, authContext);
+});
+```
+
+## **Testing Patterns**
+
+### **Layer-Specific Testing**
+```typescript
+// ✅ CORRECT: Domain Entity Testing
+describe('Topic Entity', () => {
+  it('should enforce business rules on creation', () => {
+    const invalidName = TopicName.create(''); // Should throw
+    expect(() => Topic.create({ name: invalidName })).toThrow(InvalidTopicNameError);
+  });
+});
+
+// ✅ CORRECT: Use Case Testing
+describe('CreateTopicUseCase', () => {
+  it('should orchestrate topic creation', async () => {
+    const mockRepo = mock<ITopicRepository>();
+    const useCase = new CreateTopicUseCase(mockRepo, mockAuditService);
+    
+    const result = await useCase.execute(validRequest);
+    
+    verify(mockRepo.save(any())).once();
+    expect(result.topic).toBeDefined();
+  });
+});
+
+// ✅ CORRECT: Repository Testing
+describe('TopicRepository', () => {
+  it('should map domain entities correctly', async () => {
+    const repository = new TopicRepository();
+    const topic = await repository.findById(new TopicId('123'));
+    
+    expect(topic).toBeInstanceOf(Topic);
+    expect(topic.getName().getValue()).toBe('Test Topic');
+  });
+});
+```
+
+## **File Organization Standards**
+
+### **Clean Architecture Directory Structure**
+```
+src/
+├── presentation/           # Controllers, middleware, HTTP concerns
+│   ├── controllers/       # API endpoint controllers
+│   ├── middleware/        # Authentication, validation
+│   └── infrastructure/    # Base classes, testing utilities
+├── application/           # Use cases, application services, DTOs
+│   ├── use-cases/        # Single-responsibility business operations
+│   ├── services/         # Cross-cutting application concerns
+│   └── dtos/            # Data transfer objects
+├── domain/               # Core business logic
+│   ├── entities/        # Business entities with identity
+│   ├── value-objects/   # Immutable domain concepts
+│   ├── repositories/    # Abstract repository interfaces
+│   ├── services/        # Domain services for cross-entity logic
+│   └── errors/          # Domain-specific errors
+└── infrastructure/      # External concerns, persistence
+    ├── repositories/    # Concrete repository implementations
+    ├── models/         # Database schema definitions
+    ├── database/       # Connection management
+    ├── services/       # External service integrations
+    └── di/            # Dependency injection configuration
+```
+
+## **Common Patterns & Best Practices**
+
+### **Entity Construction**
+```typescript
+// ✅ CORRECT: Factory method pattern
+export class Organization extends BaseEntity<OrganizationId> {
+  static create(props: CreateOrganizationProps): Organization {
+    const id = OrganizationId.generate();
+    const org = new Organization(id, props.name, props.description);
+    org.validate();
+    return org;
+  }
+
+  static fromPersistence(props: OrganizationPersistenceProps): Organization {
+    return new Organization(
+      new OrganizationId(props.id),
+      OrganizationName.create(props.name),
+      props.description ? OrganizationDescription.create(props.description) : undefined
+    );
+  }
+}
+```
+
+### **Repository Query Patterns**
+```typescript
+// ✅ CORRECT: Complex query with proper mapping
+async findTopicsWithParticipantCount(orgId: OrganizationId): Promise<TopicWithStats[]> {
+  return this.executeOperation(async () => {
+    const pipeline = [
+      { $match: { organizationId: orgId.value } },
+      { 
+        $lookup: {
+          from: 'participants',
+          localField: '_id',
+          foreignField: 'topicId',
+          as: 'participants'
+        }
+      },
+      { 
+        $addFields: { 
+          participantCount: { $size: '$participants' } 
+        }
+      }
+    ];
+    
+    const documents = await this.model.aggregate(pipeline).exec();
+    return documents.map(doc => this.mapToTopicWithStats(doc));
+  });
+}
+```
+
+### **Use Case Composition**
+```typescript
+// ✅ CORRECT: Complex use case orchestration
+export class UpdateTopicHierarchyUseCase extends UseCase<UpdateHierarchyRequest, UpdateHierarchyResponse> {
+  async execute(request: UpdateHierarchyRequest): Promise<UpdateHierarchyResponse> {
+    // 1. Validate hierarchy changes
+    await this.validateHierarchyUpdate(request);
+    
+    // 2. Get affected topics
+    const topics = await this.topicRepository.findByIds(request.topicIds);
+    
+    // 3. Apply domain rules
+    topics.forEach(topic => topic.updateParent(request.newParentId));
+    
+    // 4. Persist changes in transaction
+    const updatedTopics = await this.topicRepository.saveAll(topics);
+    
+    // 5. Update search index
+    await this.searchService.reindexTopics(updatedTopics);
+    
+    return { updatedTopics };
+  }
+}
+```
+
+## **Performance & Optimization Patterns**
+
+### **Database Query Optimization**
+```typescript
+// ✅ CORRECT: Efficient aggregation with proper indexing
+async findTopicAnalytics(orgId: OrganizationId, dateRange: DateRange): Promise<TopicAnalytics[]> {
+  return this.executeOperation(async () => {
+    const pipeline = [
+      { 
+        $match: { 
+          organizationId: orgId.value,
+          createdAt: { 
+            $gte: dateRange.start.toDate(), 
+            $lte: dateRange.end.toDate() 
+          }
+        }
+      },
+      { 
+        $facet: {
+          topicCounts: [
+            { $group: { _id: '$category', count: { $sum: 1 } } }
+          ],
+          participantStats: [
+            { $lookup: { /* optimized lookup */ } },
+            { $group: { /* aggregated stats */ } }
+          ]
+        }
+      }
+    ];
+    
+    const [result] = await this.model.aggregate(pipeline).exec();
+    return this.mapToAnalytics(result);
+  });
+}
+```
+
+## **Security & Validation Patterns**
+
+### **Input Validation**
+```typescript
+// ✅ CORRECT: Layer-appropriate validation
+// Presentation Layer: Schema validation
+const requestSchema = z.object({
+  name: z.string().min(1).max(100),
+  organizationId: z.string().uuid(),
+  parentTopicId: z.string().uuid().optional()
+});
+
+// Domain Layer: Business rule validation
+export class Topic {
+  private validateBusinessRules(): void {
+    if (this.parentTopicId && this.parentTopicId.equals(this.id)) {
+      throw new InvalidTopicHierarchyError('Topic cannot be its own parent');
+    }
+    
+    if (this.name.getValue().toLowerCase().includes('forbidden')) {
+      throw new InvalidTopicNameError('Topic name contains forbidden words');
+    }
+  }
+}
+```
+
+## **Migration & Refactoring Guidelines**
+
+### **Safe Refactoring Steps**
+1. **Identify Layer Violations**: Look for cross-layer imports and direct dependencies
+2. **Extract Use Cases**: Move business logic from controllers to use cases
+3. **Create Repository Interfaces**: Abstract data access behind interfaces
+4. **Implement Dependency Injection**: Remove hard-coded dependencies
+5. **Add Connection Management**: Use established BaseController/BaseRepository patterns
+6. **Test Each Layer**: Ensure proper isolation and testing
+
+### **Common Refactoring Patterns**
+```typescript
+// ❌ BEFORE: Controller with repository access
+export class OldTopicsController {
+  async createTopic(req: NextRequest) {
+    const repository = new TopicRepository(); // Direct instantiation
+    const topic = await repository.save(data); // Business logic in controller
+    return NextResponse.json(topic);
+  }
+}
+
+// ✅ AFTER: Clean architecture pattern
+export class TopicsController extends BaseController {
+  constructor(private createTopicUseCase: CreateTopicUseCase) {
+    super({ autoConnectDatabase: true });
+  }
+
+  async createTopic(request: NextRequest): Promise<NextResponse> {
+    return this.executeOperation(async () => {
+      const dto = await this.validateRequest(request, CreateTopicRequestSchema);
+      const result = await this.createTopicUseCase.execute(dto);
+      return this.handleResponse(result);
+    });
+  }
+}
+```
+
+## **Key Rules Summary**
+
+1. **Never bypass layer boundaries** - Controllers orchestrate through use cases, never directly access repositories
+2. **Always use proper connection management** - Follow BaseController/BaseApplicationService/BaseRepository patterns
+3. **Implement single responsibility** - Each class has one reason to change
+4. **Use dependency injection** - Never instantiate dependencies directly
+5. **Apply proper error handling** - Layer-specific error types and handling
+6. **Follow naming conventions** - Clear, intention-revealing names for all components
+7. **Test each layer independently** - Domain, application, and infrastructure tests
+8. **Respect data flow direction** - Dependencies point inward toward domain
+
+## **Additional Resources**
+
+- **Database Connection Patterns**: [Database Connection Management Guide](mdc:docs/clean-architecture/database-connection-management.md)
+- **API Compliance**: [API Compliance Checklist](mdc:docs/clean-architecture/api-compliance-checklist.md)
+- **Migration Examples**: [Auth Clean Architecture Migration](mdc:docs/clean-architecture/auth-clean-architecture-migration-completion-summary.md)
+- **Testing Guidelines**: [Infrastructure Testing Documentation](mdc:src/presentation/infrastructure/testing/TESTING.md)
+
+This rule enforces our established clean architecture patterns and prevents common violations that break layer separation and architectural integrity.
+description:
+globs:
+alwaysApply: false
+---

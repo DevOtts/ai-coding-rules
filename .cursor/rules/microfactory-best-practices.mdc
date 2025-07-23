@@ -1,5 +1,5 @@
 ---
-description: Enforces best practices for Next.js development, covering database, Next.js, React, and data handling. Derived from [code-good-practices.md](mdc:docs/guidance/code-good-practices.md).
+description: Enforces best practices for Devotts project development, covering database, Next.js, React, and data handling. Derived from [code-good-practices.md](mdc:docs/guidance/code-good-practices.md).
 globs: ["**/*.{ts,tsx,js,jsx,sql}", "next.config.mjs"]
 alwaysApply: true
 ---
@@ -109,6 +109,61 @@ alwaysApply: true
     ```
   - **Organize Client Components**: Consider placing client components in a `_components` subfolder within your route segments.
 
+- **Environment Variables Best Practices**
+  - **Use Direct `process.env` Access**: Always use `process.env` directly instead of creating intermediate environment variable modules.
+    ```typescript
+    // ❌ DON'T: Create intermediate env modules or abstractions
+    // src/config/env.ts
+    export const env = {
+      MONGODB_URI: process.env.MONGODB_URI,
+      MONGODB_DB: process.env.MONGODB_DB,
+      // ... other env vars
+    };
+
+    // src/some-file.ts
+    import { env } from '@/config/env';
+    await mongoose.connect(env.MONGODB_URI); // Extra layer of indirection
+
+    // ✅ DO: Access process.env directly
+    await mongoose.connect(process.env.MONGODB_URI);
+    const db = process.env.MONGODB_DB;
+    ```
+  - **Type Safety with `process.env`**: Use TypeScript to ensure type safety with environment variables.
+    ```typescript
+    // ✅ DO: Add type declarations for process.env
+    // src/types/environment.d.ts
+    declare global {
+      namespace NodeJS {
+        interface ProcessEnv {
+          MONGODB_URI: string;
+          MONGODB_DB: string;
+          NODE_ENV: 'development' | 'production' | 'test';
+          // ... other env vars
+        }
+      }
+    }
+
+    // This will now have proper TypeScript support
+    const uri = process.env.MONGODB_URI;
+    ```
+  - **Validation on Startup**: Validate required environment variables when the application starts.
+    ```typescript
+    // ✅ DO: Validate environment variables early
+    function validateEnv() {
+      const required = ['MONGODB_URI', 'MONGODB_DB', 'JWT_SECRET'];
+      const missing = required.filter(key => !process.env[key]);
+      
+      if (missing.length > 0) {
+        throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+      }
+    }
+
+    // Call this when your application starts
+    validateEnv();
+    ```
+  - **Environment-Specific Variables**: Use `.env.development`, `.env.production`, etc., for environment-specific values.
+  - **Security Considerations**: Never commit `.env` files to version control. Always use `.env.example` as a template.
+
 - **React Infinite Update Loops**
   - **Specify Correct Dependencies**: Always provide accurate and complete dependency arrays for `useEffect`, `useCallback`, and `useMemo` hooks.
     ```typescript
@@ -149,6 +204,44 @@ alwaysApply: true
     // }
     ```
     *(Note: The original example showed `params: Promise<{ id: string; }>`. Current Next.js App Router Server Components usually receive resolved `params`. Clarify based on project's Next.js version if issues arise.)*
+  - **CRITICAL: Next.js 15 API Route Handler Context Parameters**: In Next.js 15, route handler context parameters can be async and must be properly awaited to avoid runtime errors.
+    ```typescript
+    // ❌ DON'T: Access context.params directly without awaiting (Next.js 15 error)
+    export const GET = withAuth(async (
+      request: NextRequest,
+      context: { params: Promise<Record<string, string>> | Record<string, string> },
+      authContext: ServiceAuthContext
+    ) => {
+      const roleId = context.params.roleId; // ERROR: context.params might be a Promise
+      return controller.getRoleById(request, roleId);
+    });
+
+    // ✅ DO: Always await context.params in Next.js 15 route handlers
+    export const GET = withAuth(async (
+      request: NextRequest,
+      context: { params: Promise<Record<string, string>> | Record<string, string> },
+      authContext: ServiceAuthContext
+    ) => {
+      const resolvedParams = await Promise.resolve(context.params);
+      const roleId = resolvedParams.roleId || resolvedParams.id;
+      if (!roleId) {
+        return errorResponse('Role ID is required', '400');
+      }
+      return controller.getRoleById(request, roleId);
+    });
+
+    // ✅ DO: Handle both sync and async params with Promise.resolve pattern
+    export const PUT = withAuth(async (
+      request: NextRequest,
+      context: { params: Promise<Record<string, string>> | Record<string, string> },
+      authContext: ServiceAuthContext
+    ) => {
+      const resolvedParams = await Promise.resolve(context.params);
+      const topicId = resolvedParams.topicId || resolvedParams.id;
+      return controller.updateTopic(request, topicId);
+    });
+    ```
+    **Common Error Pattern**: Controllers accessing `context.params.roleId` directly without awaiting will cause runtime errors in Next.js 15. Always use `await Promise.resolve(context.params)` first.
   - **Error Handling**: Implement error handling for cases where parameters might be missing or invalid.
 
 - **External Image Domains in Next.js**
@@ -199,6 +292,182 @@ alwaysApply: true
     - **Provide Detailed Feedback**: Return comprehensive statistics (records processed, created, updated, errors) and specific error messages for failed rows (including sheet and row identifiers).
     - **Use Database Transactions**: Wrap the entire import process for a single file in a database transaction to ensure atomicity.
     - **Utilize Libraries**: Use reliable libraries for parsing Excel files. 
+
+### TypeScript Null Safety for Domain Entities and Repositories
+
+When working with domain entities and repositories, especially during clean architecture migrations, these null safety patterns prevent common TypeScript errors and should be applied consistently:
+
+#### 1. **Entity ID Null Safety**
+Always check if entity IDs exist before using them, especially in loops and array operations:
+```typescript
+// ✅ DO: Check for null/undefined entity IDs
+entities.forEach(entity => {
+  if (!entity.id) return; // Skip entities without valid IDs
+  entityMap.set(entity.id.value, entity);
+});
+
+// ❌ DON'T: Assume entity IDs are always present
+entities.forEach(entity => {
+  entityMap.set(entity.id.value, entity); // Error: entity.id might be null
+});
+```
+
+#### 2. **Null-safe Equality Checks**
+Always verify objects exist before calling methods, especially for domain entity comparisons:
+```typescript
+// ✅ DO: Null-safe equality checks
+return !ancestors.some(ancestor => ancestor.id && ancestor.id.equals(entityId));
+
+// ❌ DON'T: Direct method calls without null checks
+return !ancestors.some(ancestor => ancestor.id.equals(entityId)); // Error: ancestor.id might be null
+```
+
+#### 3. **Array Operations with Nullable Items**
+When working with arrays that might contain null items, filter and type-assert appropriately:
+```typescript
+// ✅ DO: Filter nulls and type-assert for safety
+queue.push(...children.map(child => child.id).filter(id => id !== null) as EntityId[]);
+
+// ❌ DON'T: Direct mapping without null handling
+queue.push(...children.map(child => child.id)); // Error: child.id might be null
+```
+
+#### 4. **Multiple Level Null Guards**
+Implement defensive programming with multiple null checks, especially for nested objects:
+```typescript
+// ✅ DO: Multiple level null checks
+if (!entity || !entity.id) return null;
+
+// ✅ DO: Conditional chaining for complex operations
+const result = entity?.id?.value && entity.id.equals(targetId);
+
+// ❌ DON'T: Single level checks for nested access
+if (!entity.id.value) return null; // Error: entity might be null
+```
+
+#### 5. **Value Object Property Access**
+Always use proper getter methods for value objects instead of direct property access:
+```typescript
+// ✅ DO: Use getter methods for value objects
+const emailValue = person.email.getValue();
+const personName = person.name.getValue();
+
+// ❌ DON'T: Direct property access on value objects
+const emailValue = person.email.value; // Error: Use .getValue() instead
+```
+
+#### 6. **Repository Method Implementations**
+Replace non-existent model methods with standard MongoDB operations:
+```typescript
+// ✅ DO: Use standard MongoDB queries
+const documents = await this.model.find({
+  organizationId: objectId,
+  $text: { $search: searchTerm }
+});
+
+// ❌ DON'T: Assume custom model methods exist
+const documents = await this.model.searchByText(searchTerm, objectId); // Error: Method doesn't exist
+```
+
+#### 7. **Database Index Creation**
+Use individual index creation calls instead of bulk operations for better type safety:
+```typescript
+// ✅ DO: Create indexes individually
+await this.model.collection.createIndex({ email: 1 });
+await this.model.collection.createIndex({ 'identifiers.source': 1, 'identifiers.sourceId': 1 });
+
+// ❌ DON'T: Loop over index definitions (type issues)
+const indexes = [{ email: 1 }, { name: 1 }];
+for (const index of indexes) {
+  await this.model.collection.createIndex(index); // May cause type conflicts
+}
+```
+
+#### 8. **Safe Entity Mapping**
+Handle null cases when mapping between domain entities and database documents:
+```typescript
+// ✅ DO: Safe entity mapping with null handling
+protected mapToDomain(document: EntityDocument): Entity | null {
+  if (!document || !document._id) return null;
+  
+  return Entity.fromPersistence({
+    id: document._id.toString(),
+    name: document.name || '', // Provide safe defaults
+    // ... other mappings
+  });
+}
+
+// ❌ DON'T: Direct mapping without null checks
+protected mapToDomain(document: EntityDocument): Entity {
+  return Entity.fromPersistence({
+    id: document._id.toString(), // Error: document might be null
+    name: document.name, // Error: name might be undefined
+  });
+}
+```
+
+#### 9. **Safe Array Processing in Hierarchies**
+When processing hierarchical data (topics, organizations, etc.), safely handle parent-child relationships:
+```typescript
+// ✅ DO: Safe hierarchy processing
+topics.forEach(topic => {
+  if (!topic.id) return;
+  
+  topicMap.set(topic.id.value, topic);
+  
+  if (topic.parentTopicId) {
+    const parent = topics.find(t => t.id && t.id.equals(topic.parentTopicId!));
+    if (parent) {
+      parentMap.set(topic.id.value, parent);
+    }
+  }
+});
+
+// ❌ DON'T: Assume parent relationships always exist
+topics.forEach(topic => {
+  topicMap.set(topic.id.value, topic); // Error: topic.id might be null
+  parentMap.set(topic.id.value, topics.find(t => t.id.equals(topic.parentTopicId!))); // Multiple errors
+});
+```
+
+#### 10. **Defensive Repository Save Operations**
+Always validate entities before saving and handle potential null cases:
+```typescript
+// ✅ DO: Defensive save operations
+async save(entity: Entity): Promise<Entity> {
+  if (!entity || !entity.id) {
+    throw new RepositoryError('Entity and entity ID are required for saving');
+  }
+  
+  const document = this.mapToDocument(entity);
+  const saved = await this.model.findByIdAndUpdate(
+    entity.id.toString(),
+    document,
+    { new: true, upsert: true }
+  );
+  
+  if (!saved) {
+    throw new RepositoryError('Failed to save entity');
+  }
+  
+  return this.mapToDomain(saved);
+}
+
+// ❌ DON'T: Direct save without validation
+async save(entity: Entity): Promise<Entity> {
+  const document = this.mapToDocument(entity); // Error: entity might be null
+  const saved = await this.model.findByIdAndUpdate(entity.id.toString(), document);
+  return this.mapToDomain(saved); // Error: saved might be null
+}
+```
+
+**Key Takeaways:**
+- Always check for null/undefined before accessing object properties or calling methods
+- Use filter operations to remove nulls before type assertions
+- Implement defensive programming patterns in repository methods
+- Use proper getter methods for value objects
+- Handle edge cases gracefully with appropriate error messages
+- Apply these patterns consistently across all repository implementations
 
 ### Next.js API Route Handlers
 
@@ -258,7 +527,40 @@ export const GET = withAuth(async (
 });
 ```
 
-- **Dual Authentication (DualAuth) Implementation**
+  - **Dual Authentication (DualAuth) Implementation**
+  - **Critical Anti-Patterns to Avoid**: Never explicitly check for only user authentication in routes that use `withDualAuth`.
+    ```typescript
+    // ❌ DON'T: Reject service authentication in dual auth routes
+    export const POST = withDualAuth(async (request: NextRequest, authContext: ServiceAuthContext) => {
+      // This incorrectly rejects valid service authentication
+      if (!authContext.userId) {
+        return NextResponse.json(
+          { error: 'Unauthorized', message: 'User authentication required' },
+          { status: 401 }
+        );
+      }
+    });
+
+    // ❌ DON'T: Check isUserAuth when service auth should be allowed
+    export const GET = withDualAuth(async (request: NextRequest, authContext: ServiceAuthContext) => {
+      if (!authContext.isUserAuth || !authContext.userId) {
+        return NextResponse.json({ error: 'User authentication required' }, { status: 401 });
+      }
+    });
+
+    // ✅ DO: Support both authentication types properly
+    export const POST = withDualAuth(async (request: NextRequest, authContext: ServiceAuthContext) => {
+      // Check if either user or service is authenticated
+      if (!authContext || (!authContext.userId && !authContext.serviceId)) {
+        return NextResponse.json(
+          { error: 'Unauthorized', message: 'Authentication required' },
+          { status: 401 }
+        );
+      }
+      // Continue with business logic...
+    });
+    ```
+
   - **Authentication Strategy Support**: Always implement support for both user JWT authentication and service API key authentication in the same endpoints.
     ```typescript
     // ✅ DO: Use withDualAuth to support both authentication types
@@ -271,18 +573,110 @@ export const GET = withAuth(async (
       authContext: ServiceAuthContext,
       context?: { params: Record<string, string> }
     ) => {
-      // authContext provides information about authentication type
-      if (authContext.type === 'user') {
-        // Handle user JWT authentication
-        const user = authContext.user;
-        console.log('User authenticated:', user.id);
-      } else if (authContext.type === 'service') {
-        // Handle service API key authentication
-        const serviceKey = authContext.serviceKey;
-        console.log('Service authenticated:', serviceKey);
+      // Proper dual authentication check
+      if (!authContext || (!authContext.userId && !authContext.serviceId)) {
+        return NextResponse.json(
+          { error: 'Unauthorized', message: 'Authentication required' },
+          { status: 401 }
+        );
+      }
+
+      // Branch logic based on authentication type
+      if (authContext.isServiceAuth) {
+        // Service authentication: typically full access
+        console.log('[DEBUG] ✅ Service authentication - full access granted');
+      } else if (authContext.isUserAuth && authContext.userId) {
+        // User authentication: apply user-specific logic
+        console.log('[DEBUG] User authenticated:', authContext.userId);
       }
       
       // Your endpoint logic here
+    });
+    ```
+
+  - **Special Cases - User-Only Endpoints**: Some endpoints legitimately require user authentication only.
+    ```typescript
+    // ✅ DO: Document when user-only auth is intentional (e.g., /me endpoints)
+    export const GET = withDualAuth(async (request: NextRequest, authContext: ServiceAuthContext) => {
+      // Check if user is authenticated (me endpoint specifically requires user auth, not service auth)
+      if (!authContext.isUserAuth || !authContext.userId) {
+        throw newUnauthorizedError('User authentication required');
+      }
+      // Return user-specific data...
+    });
+    ```
+
+  - **Common Broken Patterns Found in Codebase**: These were actual issues discovered and fixed.
+    ```typescript
+    // ❌ FIXED: These patterns were found and corrected in multiple routes
+    
+    // 1. AI Summarization Route (was rejecting service auth)
+    if (!authContext.userId) { // WRONG - rejects service auth
+      return standardError('UNAUTHORIZED', 'User authentication required');
+    }
+
+    // 2. Advanced AI Query Route (was rejecting service auth)  
+    if (!authContext.userId) { // WRONG - rejects service auth
+      return standardError('UNAUTHORIZED', 'User authentication required');
+    }
+
+    // 3. Content Ingestion Route (was rejecting service auth)
+    if (!authContext.userId) { // WRONG - rejects service auth
+      return NextResponse.json({ error: 'User authentication required' }, { status: 401 });
+    }
+
+    // 4. Content Interactions Route (was rejecting service auth)
+    if (!authContext.userId) { // WRONG - rejects service auth
+      return contentValidationError('interaction', 'User authentication required');
+    }
+
+    // 5. Organization Members Route (was rejecting service auth in 2 methods)
+    if (!authContext.userId) { // WRONG - rejects service auth
+      return NextResponse.json({ error: 'User authentication required' }, { status: 401 });
+    }
+    ```
+
+  - **Correct Authentication Patterns**: Examples of properly implemented dual auth.
+    ```typescript
+    // ✅ DO: Organizations route pattern (correctly implemented)
+    if (authContext.isServiceAuth) {
+      // Service authentication: return all organizations
+      console.log('[DEBUG] Service auth - fetching all organizations');
+      organizations = await Organization.find({});
+    } else if (authContext.isUserAuth && authContext.userId) {
+      // User authentication: return user-specific organizations
+      const userId = new mongoose.Types.ObjectId(authContext.userId);
+      organizations = await Organization.find({
+        $or: [{ ownerId: userId }, { 'members.userId': userId }]
+      });
+    } else {
+      return unauthorizedResponse('Authentication required');
+    }
+
+    // ✅ DO: Vector Search route pattern (correctly implemented)
+    // Check authentication - support both user and service auth
+    if (!authContext || (!authContext.userId && !authContext.serviceId)) {
+      return enhancedError('AUTHENTICATION_ERROR', 
+        'Authentication required - neither user nor service authentication found.',
+        HttpStatus.UNAUTHORIZED);
+    }
+    ```
+
+  - **User Context Fallbacks**: Handle missing user properties gracefully for service auth.
+    ```typescript
+    // ✅ DO: Provide fallbacks for service authentication
+    const userContext = createUserContext({
+      userId: (authContext.userId || authContext.serviceId || 'service-user').toString(),
+      email: authContext.userId || 'service-user', // Service auth doesn't have email
+      organizationId: authContext.organizationId,
+      sessionType: authContext.source?.includes('people') ? 'people' : 'legacy',
+      identifiers: [] // Service auth doesn't have identifiers
+    });
+
+    // ❌ DON'T: Assume user properties exist for service auth
+    const userContext = createUserContext({
+      userId: authContext.userId.toString(), // FAILS for service auth - userId is undefined
+      email: authContext.userEmail, // FAILS for service auth - doesn't exist
     });
     ```
 
@@ -315,16 +709,14 @@ export const GET = withAuth(async (
     ```typescript
     // ✅ DO: Define comprehensive ServiceAuthContext interface
     interface ServiceAuthContext {
-      type: 'user' | 'service';
-      user?: {
-        id: string;
-        email: string;
-        role: string;
-        organizationId?: string;
-      };
-      serviceKey?: string;
+      isUserAuth: boolean;
+      isServiceAuth: boolean;
+      userId?: string;
+      serviceId?: string;
+      organizationId?: string;
+      userRole?: string;
       isAuthenticated: boolean;
-      authMethod: 'jwt' | 'service_key';
+      source?: string;
     }
     ```
 
@@ -386,14 +778,24 @@ export const GET = withAuth(async (
           const token = authHeader.substring(7);
           const user = await validateJWT(token);
           if (user) {
-            return handler(request, { type: 'user', user, isAuthenticated: true, authMethod: 'jwt' }, context);
+            return handler(request, { 
+              isUserAuth: true, 
+              isServiceAuth: false,
+              userId: user.id,
+              isAuthenticated: true 
+            }, context);
           }
         }
 
         // 2. Fall back to service API key authentication
         const serviceKey = request.headers.get('x-service-api-key');
         if (serviceKey && serviceKey === process.env.MCP_SERVICE_API_KEY) {
-          return handler(request, { type: 'service', serviceKey, isAuthenticated: true, authMethod: 'service_key' }, context);
+          return handler(request, { 
+            isUserAuth: false, 
+            isServiceAuth: true,
+            serviceId: 'service',
+            isAuthenticated: true 
+          }, context);
         }
 
         // 3. Neither authentication method succeeded
@@ -410,39 +812,18 @@ export const GET = withAuth(async (
       authContext: ServiceAuthContext,
       context?: { params: Record<string, string> }
     ) => {
-      if (authContext.type === 'user') {
+      if (authContext.isUserAuth) {
         // User-based permissions
-        if (!authContext.user?.role.includes('admin')) {
+        if (!authContext.userRole?.includes('admin')) {
           return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
         }
-      } else if (authContext.type === 'service') {
+      } else if (authContext.isServiceAuth) {
         // Service keys typically have full access, but can be restricted
         console.log('Service authentication - full access granted');
       }
       
       // Proceed with deletion logic
     });
-    ```
-
-  - **Logging and Monitoring**: Implement comprehensive logging for both authentication types.
-    ```typescript
-    // ✅ DO: Log authentication events for monitoring
-    const logAuthEvent = (authContext: ServiceAuthContext, endpoint: string, action: string) => {
-      const logData = {
-        timestamp: new Date().toISOString(),
-        endpoint,
-        action,
-        authType: authContext.type,
-        authMethod: authContext.authMethod,
-        userId: authContext.type === 'user' ? authContext.user?.id : undefined,
-        serviceKey: authContext.type === 'service' ? 'REDACTED' : undefined,
-      };
-      
-      console.log('Auth Event:', JSON.stringify(logData));
-    };
-
-    // Usage in handlers:
-    logAuthEvent(authContext, '/api/organizations', 'GET');
     ```
 
   - **Testing Strategy**: Implement comprehensive tests for both authentication methods.
@@ -473,6 +854,17 @@ export const GET = withAuth(async (
         const response = await fetch('/api/endpoint');
         expect(response.status).toBe(401);
       });
+
+      test('should not reject service auth when using withDualAuth', async () => {
+        const response = await fetch('/api/endpoint', {
+          headers: {
+            'X-Service-API-Key': process.env.MCP_SERVICE_API_KEY,
+            'Content-Type': 'application/json'
+          }
+        });
+        // Should NOT return 401 with "User authentication required"
+        expect(response.status).not.toBe(401);
+      });
     });
     ```
 
@@ -482,9 +874,9 @@ export const GET = withAuth(async (
     
     // 1. Rate limiting per authentication type
     const rateLimitByAuthType = (authContext: ServiceAuthContext) => {
-      if (authContext.type === 'user') {
+      if (authContext.isUserAuth) {
         // More restrictive rate limiting for user requests
-        return checkRateLimit(authContext.user?.id, { requests: 100, window: '1h' });
+        return checkRateLimit(authContext.userId, { requests: 100, window: '1h' });
       } else {
         // More permissive for service requests
         return checkRateLimit('service', { requests: 1000, window: '1h' });
@@ -512,5 +904,246 @@ export const GET = withAuth(async (
       }
     };
     ```
+
+## Database Connection Management - Clean Architecture Patterns
+
+Based on the comprehensive database connection refactoring that eliminated 64 manual `connectToDB()` calls and achieved 100% clean architecture compliance, follow these standardized patterns:
+
+- **Three-Layer Connection Strategy**: Implement connection management at the appropriate architectural layer
+  - **Controllers**: Auto-connect per request for presentation layer
+  - **Services**: Configurable auto-connect for application layer  
+  - **Infrastructure**: ConnectionManager for specialized database access
+
+### BaseController Pattern
+
+- **Auto-Connect Configuration**: Use `autoConnectDatabase: true` for controllers that need database access
+  ```typescript
+  // ✅ DO: Configure BaseController with auto-connect
+  export class ExampleController extends BaseController {
+    constructor() {
+      super({ autoConnectDatabase: true });
+    }
+    
+    async handleRequest(request: NextRequest): Promise<NextResponse> {
+      // Database connection automatically established
+      return super.handleRequest(request);
+    }
+  }
+  ```
+- **Integration with Authentication**: Database connection integrates seamlessly with existing auth flow
+- **Error Handling**: Built-in comprehensive error handling for connection issues
+
+### BaseApplicationService Pattern
+
+- **Configurable Auto-Connect**: Use `autoConnect: false` when controllers establish connection
+  ```typescript
+  // ✅ DO: Configure service to trust existing connection
+  export class ExampleService extends BaseApplicationService {
+    constructor() {
+      super({ autoConnect: false }); // Trust controller establishes connection
+    }
+    
+    async execute<T>(operation: () => Promise<T>): Promise<T> {
+      return super.execute(operation);
+    }
+  }
+  ```
+- **Service Lifecycle Management**: Built-in service lifecycle with dependency injection support
+- **Centralized Error Handling**: ServiceError class for application-specific errors
+
+### BaseRepository Pattern
+
+- **Automatic Connection Management**: All repository operations use `executeOperation()` wrapper
+  ```typescript
+  // ✅ DO: Use executeOperation for all database operations
+  export class ExampleRepository extends BaseRepository<Entity, Document, IdType> {
+    async findById(id: IdType): Promise<Entity | null> {
+      return this.executeOperation(async () => {
+        const doc = await this.model.findById(id.value);
+        return doc ? this.mapToDomain(doc) : null;
+      });
+    }
+  }
+  ```
+- **Performance Tracking**: Built-in performance monitoring and slow query detection
+- **Infrastructure Error Handling**: RepositoryError class for database-specific errors
+
+### ConnectionManager for Infrastructure
+
+- **Specialized Infrastructure Access**: Use ConnectionManager for services that can't extend base classes
+  ```typescript
+  // ✅ DO: Use ConnectionManager for infrastructure services
+  export const performDatabaseOperation = async () => {
+    return ConnectionManager.withConnection(async () => {
+      // Database operations here
+    });
+  };
+  ```
+- **Convenience Wrappers**: Use specific wrappers for different infrastructure contexts
+  - `withConnection()` - General database operations
+  - `withMiddlewareConnection()` - Middleware-specific operations
+  - `withAuthServiceConnection()` - Authentication service operations
+  - `withDbUtilConnection()` - Database utility operations
+
+### Connection Optimization
+
+- **Prevent Double Connections**: Configure services to reuse controller connections
+  ```typescript
+  // ✅ DO: Optimize connection flow
+  export class ExampleController extends BaseController {
+    constructor(private service: ExampleService) {
+      super({ autoConnectDatabase: true }); // Controller establishes connection
+    }
+  }
+  
+  export class ExampleService extends BaseApplicationService {
+    constructor() {
+      super({ autoConnect: false }); // Service reuses existing connection
+    }
+  }
+  ```
+- **Connection Pooling**: Mongoose connection pooling automatically manages physical connections
+- **Resource Management**: Proper cleanup and lifecycle management built into all patterns
+
+### Error Handling Standardization
+
+- **Consistent Error Patterns**: Use standardized error handling across all layers
+  ```typescript
+  // ✅ DO: Use consistent error handling
+  return this.executeOperation(async () => {
+    // Database operation with automatic error handling, logging, and transformation
+  });
+  ```
+- **Error Categories**: Different error types for different architectural layers
+  - `ServiceError` - Application layer errors with business context
+  - `RepositoryError` - Infrastructure layer errors with technical context
+  - `ConnectionError` - Database connection specific errors
+
+### Migration Guidelines
+
+- **Eliminate Manual Connections**: Never use manual `await connectToDB()` calls
+  ```typescript
+  // ❌ DON'T: Use manual database connections
+  // const connectDB = async () => {
+  //   await connectToDB();
+  //   // operation
+  // };
+
+  // ✅ DO: Use appropriate base class pattern
+  // extends BaseController with autoConnectDatabase: true
+  // extends BaseApplicationService with autoConnect: false
+  // extends BaseRepository with executeOperation()
+  // use ConnectionManager.withConnection()
+  ```
+- **Proper Layer Selection**: Choose the appropriate connection pattern for your layer
+- **Testing Strategy**: Use dependency injection for easy mocking and testing
+
+### Performance Monitoring
+
+- **Connection Metrics**: Built-in tracking of connection establishment and usage
+- **Query Performance**: Automatic performance logging for slow operations
+- **Error Rate Monitoring**: Track errors per layer for system health
+- **Resource Optimization**: Strategic connection reuse and pooling
+
+### Best Practices Enforcement
+
+- **Architecture Compliance**: All new code must follow these patterns
+- **Code Review**: Ensure new database access uses appropriate base classes
+- **Monitoring**: Set up alerts for manual connection usage (should be zero)
+- **Documentation**: Keep connection patterns documented and updated
+
+## CORS (Cross-Origin Resource Sharing) Best Practices
+
+### ⚡ **Automatic CORS System (Current Implementation)**
+
+**CRITICAL**: The system now uses **automatic CORS** via middleware. Manual `withCors()` calls are no longer needed and will cause duplicate headers.
+
+### Environment-Based CORS Configuration
+
+- **Use Environment Variables for Origin Whitelist**: Configure allowed origins via `CORS_ALLOWED_ORIGINS` environment variable
+  ```env
+  # ✅ DO: Use comma-separated list of specific origins
+  CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3001,https://frontend-domain.com
+  ```
+- **Default Security**: System defaults to localhost ports only if environment variable is not set
+- **No Wildcards in Production**: Never use `*` for production origins - always specify exact domains
+
+### Automatic CORS Implementation Patterns
+
+- **Pattern 1: Authenticated Routes (Most Common)**
+  ```typescript
+  // ✅ DO: CORS automatically applied via withDualAuth
+  export const GET = withDualAuth(async (
+    request: NextRequest,
+    authContext: ServiceAuthContext
+  ) => {
+    const result = await getData();
+    return successResponse(result, 'Data retrieved'); // ✅ Auto-CORS
+  });
+  ```
+
+- **Pattern 2: Public Routes**
+  ```typescript
+  // ✅ DO: Use withAutoCors for non-authenticated routes
+  import { withAutoCors } from '@/infrastructure/api';
+
+  export const GET = withAutoCors(async (request: NextRequest) => {
+    const publicData = await getPublicData();
+    return successResponse(publicData, 'Public data'); // ✅ Auto-CORS
+  });
+  ```
+
+- **Pattern 3: OPTIONS Handlers (Required for Preflight)**
+  ```typescript
+  // ✅ DO: Add OPTIONS handler for preflight requests
+  import { handleCorsPreflightRequest } from '@/infrastructure/api';
+
+  export async function OPTIONS(request: NextRequest) {
+    return handleCorsPreflightRequest(request);
+  }
+  ```
+
+### **❌ DEPRECATED PATTERNS - DO NOT USE**
+
+- **Manual CORS Calls**: These patterns cause duplicate CORS headers
+  ```typescript
+  // ❌ DON'T: Manual withCors calls (causes duplicate headers)
+  const response = successResponse(data, 'Success');
+  return withCors(response, request); // DEPRECATED
+
+  // ❌ DON'T: Request parameter in error handlers
+  return await handleApiError(error, request); // DEPRECATED
+  ```
+
+### Correct Implementation
+
+- **Authentication Middleware**: Automatically applies CORS to all `withDualAuth` responses
+- **Public Route Wrapper**: Use `withAutoCors` for non-authenticated endpoints
+- **Error Handling**: All error responses automatically include CORS headers
+- **Controller Responses**: All response functions automatically get CORS headers
+
+### Security Considerations
+
+- **Regular Origin Review**: Periodically review and update allowed origins list
+- **HTTPS in Production**: Always use HTTPS URLs for production origins
+- **Trusted Domains Only**: Only add domains you control or explicitly trust
+- **Environment-Specific Configuration**: Use different origin lists for development, staging, and production
+
+### Testing CORS Implementation
+
+- **Browser Testing**: Verify frontend applications can make requests without CORS errors
+- **Curl Testing**: Test both preflight and actual requests
+- **No Duplicate Headers**: Ensure responses don't have duplicate CORS headers
+
+### Migration from Manual CORS
+
+If you see manual CORS patterns in existing code:
+
+1. **Remove** manual `withCors(response, request)` calls
+2. **Remove** request parameters from `handleApiError(error, request)`
+3. **Use** `withAutoCors` for public routes that don't use `withDualAuth`
+4. **Keep** OPTIONS handlers for preflight support
+
+### **Result**: Zero manual CORS calls + guaranteed CORS on all responses
 
 --- 

@@ -53,5 +53,3 @@ AI Agents have no way of knowing your expected JSON schema unless you explicitly
 Use this rule when configuring **any** n8n HTTP request node exposed through an MCP Server.
 
 ---
-
-Would you like me to save this to your internal workspace notes or export it as markdown for documentation?

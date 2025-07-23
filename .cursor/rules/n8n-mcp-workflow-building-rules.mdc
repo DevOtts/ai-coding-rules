@@ -382,6 +382,50 @@ async function testServiceAuthentication() {
 - Monitor and alert on resource usage
 - Implement graceful degradation under load
 
+
+### Rule 16: Tool Parameter Mapping (n8n AI Tools & Query Parameters)
+
+**Rule: Always map AI tool input parameters explicitly in n8n node settings.**
+
+#### **Background**
+
+When integrating AI agents (such as LangChain or OpenAI) with HTTP API tools in n8n, it's critical to connect the tool’s expected arguments to the actual API request parameters.
+Placing `{{ $json.arguments.email }}` (or similar) in the URL string alone will **not** work with n8n’s AI Tool nodes as of version 1.102+.
+
+#### **Best Practice**
+
+* In any **HTTP Request Tool** node (used as an AI tool):
+
+  1. Go to the **Query Parameters** section.
+  2. Add each parameter (e.g., `email`) as a key.
+  3. For values that the AI should provide, select **“By Model (and is required)”**.
+  4. For values you wish to hardcode, select **“Using Field Below”** and enter the value.
+* Do **not** place dynamic parameter references directly in the URL (e.g., `?email={{ $json.arguments.email }}`) for AI tools; this will not be filled automatically.
+* Document the expected argument shape (e.g., `{ "email": "<user email>" }`) in the tool description for the AI to see.
+
+#### **Example**
+
+> **Incorrect:**
+> `https://my-api.com/endpoint?email={{ $json.arguments.email }}`
+>
+> **Correct:**
+>
+> * URL: `https://my-api.com/endpoint`
+> * Query Parameters:
+>
+>   * `email` = **By Model (and is required)**
+
+#### **Why?**
+
+AI agent tool nodes in n8n fill parameters via the Query Parameters table—not by templating the URL string.
+
+#### **Checklist (For All AI Tool Node Connections):**
+
+* [ ] Have you **declared all required parameters** in the Query Parameters section?
+* [ ] Did you select **“By Model (and is required)”** for any argument the LLM should fill?
+* [ ] Is your tool’s description clear on the expected JSON argument structure?
+* [ ] Are you **NOT** templating arguments directly in the URL?
+
 ---
 
 ## Implementation Checklist

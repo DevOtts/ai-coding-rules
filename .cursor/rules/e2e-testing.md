@@ -1,0 +1,154 @@
+---
+description: "Best practices for creating comprehensive, data-driven end-to-end (E2E) tests."
+globs: ["**/tests/e2e/**/*.js", "**/e2e-tests/**/*.js"]
+alwaysApply: true
+---
+
+# E2E Testing Good Practices
+
+This document outlines the best practices for creating and maintaining end-to-end (E2E) tests for our projects. The goal is to have a robust testing suite that validates entire workflows, ensures data integrity, and provides a clear "definition of done" for features. These tests are crucial for both human developers and AI assistants to verify implementations and prevent regressions.
+
+The reference implementation for these practices can be found in [`e2e-tests/full-e2e-test.js`](mdc:e2e-tests/full-e2e-test.js).
+
+## Key Principles
+
+1.  **Test Against a Real Database**: E2E tests should run against a real, but non-production (e.g., `dev` or `test`), database instance. This validates not just the application logic but also database interactions, schema, and constraints.
+2.  **Full Workflow Coverage**: Tests should simulate complete user journeys or API workflows, not just isolated unit operations. For example, a test should cover user registration, logging in, creating a resource, accessing that resource, and then failing to access a resource they don't own.
+3.  **Data Isolation is Key**: Each test scenario should, as much as possible, create and operate on its own unique set of data. This prevents tests from interfering with each other and makes failures easier to debug. Scenarios should not depend on data from previous scenarios unless explicitly designed for sequence testing.
+4.  **Automated Cleanup**: A crucial part of E2E testing is tearing down the created data. Our approach is to generate a `cleanup.sh` script alongside the test report, which contains all the `curl` commands needed to delete the resources created during the test run.
+5.  **Actionable Reporting**: Tests must produce a clear, easy-to-read report that details which steps passed and which failed. For our projects, this is a markdown file (`e2e-test-report.md`) that can be easily viewed.
+
+## Test File Structure
+
+A typical E2E test script should be organized as follows:
+
+```javascript
+// 1. Imports (node-fetch, faker, etc.)
+const fetch = require('node-fetch');
+const { faker } = require('@faker-js/faker');
+const path = require('path');
+
+// 2. Constants (BASE_URL, report files)
+const BASE_URL = 'http://localhost:3000/api';
+const REPORT_FILE = path.join(__dirname, 'e2e-test-report.md');
+const CLEANUP_FILE = path.join(__dirname, 'cleanup-e2e-test-data.sh');
+
+// 3. Global State Management (scoped per scenario)
+let state = {};
+
+// 4. Utility Functions (apiCall, reporting, cleanup)
+// ... function definitions ...
+
+// 5. Test Scenarios (async functions)
+async function setupPrimaryOrg() { /* ... */ }
+async function test_DataIsolation() { /* ... */ }
+// ... more scenarios ...
+
+// 6. Main Execution Block
+async function main() {
+    initializeReport();
+    await setupPrimaryOrg();
+    await test_DataIsolation();
+    // ... run all scenarios ...
+    console.log('✅ E2E Test Suite Completed Successfully!');
+}
+
+main().catch(error => {
+    console.error('🚨 An unexpected error occurred:');
+    console.error(error);
+    process.exit(1);
+});
+```
+
+## Core Components Explained
+
+### The `apiCall` Helper
+
+This is the heart of the test script. It's a robust wrapper around `fetch` that handles common tasks.
+
+-   **✅ DO**: Create a centralized `apiCall` helper.
+-   **✅ DO**: Include logging for each step.
+-   **✅ DO**: Handle both expected successes and failures (`expectFailure: true`).
+-   **✅ DO**: Automatically handle JSON stringification and setting headers.
+-   **✅ DO**: Log results to the report file.
+-   **✅ DO**: Exit the process on an unexpected failure to prevent cascading errors.
+
+```javascript
+// From: e2e-tests/full-e2e-test.js
+
+async function apiCall(step, { method, endpoint, body, token, expectFailure = false, expectedStatus }) {
+    console.log(`[${step}] Running: ${method} ${endpoint}`);
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    try {
+        const response = await fetch(`${BASE_URL}${endpoint}`, { /* ... */ });
+        const responseText = await response.text();
+        const responseBody = responseText ? JSON.parse(responseText) : null;
+
+        if (!expectFailure && !response.ok) {
+            throw { /* ... */ };
+        }
+        
+        if (expectFailure) {
+            // ... logic to check for expected failure status ...
+        }
+        
+        logToReport(step, `${method} ${endpoint}`, '✅ Success', responseBody.data);
+        return responseBody;
+
+    } catch (error) {
+        console.error(`❌ [${step}] FAILED: ${error.message}`);
+        logToReport(step, `${method} ${endpoint}`, '❌ FAILED', error);
+        process.exit(1);
+    }
+}
+```
+
+### Scenario-Based Organization
+
+-   **✅ DO**: Group related steps into `async` functions named for the scenario they test (e.g., `test_DataIsolation`).
+-   **✅ DO**: Use a global `state` object to pass data (like auth tokens, created IDs) between steps within a scenario. Reset or re-initialize `state` for logically distinct scenarios.
+-   **✅ DO**: Use descriptive step names (e.g., '1.1 Register User A', '2.4 User B attempts to GET Org A's interaction').
+
+```javascript
+// From: e2e-tests/full-e2e-test.js
+
+async function test_DataIsolation() {
+    addScenarioHeader('Scenario: Data Isolation between Organizations');
+    state.orgB = { user: null, token: null, orgId: null };
+    
+    // ... register and login user B ...
+    
+    // This is the key test step
+    await apiCall("2.4 User B attempts to GET Org A's interaction", {
+        method: 'GET',
+        endpoint: `/interactions/${state.orgA.uniqueInteractionId}`,
+        token: state.orgB.token,
+        expectFailure: true,
+        expectedStatus: 404 
+    });
+}
+```
+
+### Cleanup Script Generation
+
+-   **✅ DO**: As soon as a resource is created, append a command to the cleanup script to delete it.
+-   **✅ DO**: Use the correct HTTP method (e.g., `DELETE`) and the full URL.
+-   **✅ DO**: Store the session token from an authenticated user in the script to ensure the cleanup commands are authorized.
+
+```javascript
+// From: e2e-tests/full-e2e-test.js
+
+function addToCleanup(method, url, id, resourceName) {
+    const command = `echo "Deleting ${resourceName}: ${id}"\ncurl -X ${method} "${url}" -H "Authorization: Bearer \${SESSION_TOKEN}"\n\n`;
+    fs.appendFileSync(CLEANUP_FILE, command, { flag: 'a' });
+}
+
+// Usage after creating a resource:
+const orgAResponse = await apiCall(/* ... */);
+state.orgA.orgId = orgAResponse.data.id;
+addToCleanup('DELETE', `${BASE_URL}/organizations/${state.orgA.orgId}`, state.orgA.orgId, 'Organization A');
+``` 
